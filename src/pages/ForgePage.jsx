@@ -10,6 +10,8 @@ import {
   subscribeForgeLessons,
   uploadForgeFiles,
 } from "../services/forgeService.js";
+import { useStagedProgress } from "../hooks/useStagedProgress.js";
+import { LoadingOverlay } from "../components/LoadingOverlay.jsx";
 
 export function ForgePage() {
   const navigate = useNavigate();
@@ -20,8 +22,11 @@ export function ForgePage() {
   const [pastedNotes, setPastedNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
-  const [progress, setProgress] = useState(0);
   const [loadError, setLoadError] = useState("");
+  const loader = useStagedProgress({ busy, minDuration: 1000 });
+  const progress = loader.progress;
+  // Derive display stage: prefer explicit status if set, otherwise loader stage
+  const displayStage = status || loader.stage;
 
   useEffect(() => {
     if (!user?.uid) {
@@ -70,18 +75,30 @@ export function ForgePage() {
 
     setBusy(true);
     setStatus(t('forge_page.uploading_files'));
-    setProgress(0);
+    loader.setStage(0);
 
     try {
-      const result = await uploadForgeFiles(user.uid, files, setProgress);
+      const result = await uploadForgeFiles(user.uid, files, (p) => {
+        // Map file upload 0-100% → 0-20% real progress
+        loader.setProgress(Math.round((p / 100) * 20));
+      });
       uploaded = result.uploaded;
+      loader.setStage(1);
+      loader.setProgress(30);
       const combinedText = result.combinedText;
       const sourceText = [pastedNotes.trim(), combinedText].filter(Boolean).join("\n\n---\n\n");
       if (!sourceText.trim()) throw new Error(t('forge_page.no_readable_content'));
 
+      loader.setStage(2);
       setStatus(t('forge_page.generating_structure'));
+      loader.setProgress(55);
       const generated = await generateForgeStructure(user.uid, sourceText, uploaded.map((item) => item.id), uploaded);
+      loader.setStage(4);
+      loader.setProgress(90);
       await cleanupUploadedFiles(uploaded);
+      loader.setStage(5);
+      // Ensure at least minDuration and smooth 100% before navigation
+      await new Promise((r) => setTimeout(r, 420));
       navigate(`/forge/subject/${generated.id}`);
       setPastedNotes("");
       setStatus("Learning path generated successfully.");
@@ -89,7 +106,15 @@ export function ForgePage() {
       await cleanupUploadedFiles(uploaded).catch(() => {});
       setStatus(error.message || t('forge_page.upload_failed'));
     } finally {
+      // Let loader handle minDuration → 100% → hide
       setBusy(false);
+      // Clear status message after a delay so overlay shows final stage before hiding
+      const start = Date.now();
+      const check = () => {
+        if (!loader.visible) setStatus("");
+        else if (Date.now() - start < 3000) setTimeout(check, 300);
+      };
+      setTimeout(check, 1100);
       event.target.value = "";
     }
   }
@@ -101,11 +126,16 @@ export function ForgePage() {
     }
 
     setBusy(true);
-    setProgress(100);
+    loader.setStage(2);
     setStatus(t('forge_page.generating_structure'));
 
     try {
+      loader.setProgress(45);
       const generated = await generateForgeStructure(user.uid, pastedNotes.trim(), []);
+      loader.setStage(4);
+      loader.setProgress(90);
+      await new Promise((r) => setTimeout(r, 300));
+      loader.setStage(5);
       navigate(`/forge/subject/${generated.id}`);
       setPastedNotes("");
       setStatus(t('forge_page.generated_success'));
@@ -123,24 +153,7 @@ export function ForgePage() {
 
   return (
     <div className="relative space-y-6">
-      {busy && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface/80 backdrop-blur-sm">
-          <div className="flex flex-col items-center gap-4 p-8 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center shadow-lg shadow-secondary/20">
-              <RefreshCw className="w-8 h-8 text-white animate-spin" />
-            </div>
-            <div className="text-lg font-bold text-text-primary">{status || t("common.processing")}</div>
-            {progress > 0 && (
-              <div className="w-64 h-2 bg-background rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-primary transition-all duration-300"
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <LoadingOverlay progress={progress} stage={displayStage || t("common.processing")} visible={loader.visible} />
 
       <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-4 sm:pt-6 space-y-6">
         {loadError ? (

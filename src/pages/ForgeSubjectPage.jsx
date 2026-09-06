@@ -4,6 +4,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ForgeCurriculumView } from "../components/ForgeCurriculumView.jsx";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../context/AuthContext.jsx";
+import { useStagedProgress } from "../hooks/useStagedProgress.js";
+import { LoadingOverlay } from "../components/LoadingOverlay.jsx";
 import {
   getForgeContext,
   regenerateForgeStructure,
@@ -26,6 +28,7 @@ export function ForgeSubjectPage() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [loadError, setLoadError] = useState("");
+  const loader = useStagedProgress({ busy, minDuration: 1000 });
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -54,13 +57,19 @@ export function ForgeSubjectPage() {
     if (!draft) return;
 
     setBusy(true);
+    loader.setStage(2);
     setStatus(t('forge_subject.regenerating'));
     try {
+      loader.setProgress(40);
       const context = await getForgeContext(user.uid);
       const sourceText = context.sourceText || "";
       if (!sourceText) throw new Error(t('forge_subject.no_source'));
-
+      loader.setStage(3);
       await regenerateForgeStructure(user.uid, draft.id, sourceText);
+      loader.setStage(4);
+      loader.setProgress(90);
+      await new Promise((r) => setTimeout(r, 300));
+      loader.setStage(5);
       setStatus(t('forge_subject.regenerated'));
     } catch (error) {
       setStatus(error.message);
@@ -90,16 +99,7 @@ export function ForgeSubjectPage() {
 
   return (
     <div className="relative">
-      {busy && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface/80 backdrop-blur-sm">
-          <div className="flex flex-col items-center gap-4 p-8 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center shadow-lg shadow-secondary/20">
-              <RefreshCw className="w-8 h-8 text-white animate-spin" />
-            </div>
-            <div className="text-lg font-bold text-text-primary">{status || t("common.processing")}</div>
-          </div>
-        </div>
-      )}
+      <LoadingOverlay progress={loader.progress} stage={status || loader.stage} visible={loader.visible} />
 
       <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-4 sm:pt-6">
         {loadError ? (
@@ -120,7 +120,7 @@ export function ForgeSubjectPage() {
               disabled={busy || !draft}
               className="flex items-center gap-2 px-4 py-2 bg-background border border-border text-text-secondary rounded-xl text-sm font-bold hover:bg-surface transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
             >
-              <RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} />
+              <RefreshCw className={`w-4 h-4 ${busy ? "animate-spin-slow" : ""}`} />
               {t("forge.regenerate")}
             </button>
           </div>

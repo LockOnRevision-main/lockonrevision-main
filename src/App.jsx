@@ -17,8 +17,16 @@ import { canAccessAdmin } from "./utils/permissions.js";
 
 function LoadingScreen() {
   return (
-    <main className="grid min-h-screen place-items-center bg-background text-text-primary">
-       <div className="h-12 w-12 animate-spin rounded-full border-4 border-primary/20 border-t-primary" />
+    <main className="grid min-h-screen place-items-center bg-background text-text-primary p-6">
+      <div className="flex flex-col items-center gap-4">
+        <div
+          className="loading-spinner-lg animate-spin-slow rounded-full border-primary/20 border-t-primary"
+          style={{ willChange: "transform" }}
+          role="status"
+          aria-label="Loading"
+        />
+        <p className="loading-overlay-subtitle font-bold tracking-widest uppercase text-text-muted">Loading</p>
+      </div>
     </main>
   );
 }

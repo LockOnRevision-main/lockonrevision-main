@@ -8,6 +8,7 @@ import { TimetableUploadCard } from "../components/TimetableUploadCard.jsx";
 
 import { generateTimetable, savePreferencesLocally, saveTimetable, subscribeTimetables } from "../services/timetableService.js";
 import { setupTimetableIntegration } from "../services/timetableIntegration.js";
+import { useStagedProgress } from "../hooks/useStagedProgress.js";
 
 export function TimetablePage() {
   const { t } = useTranslation();
@@ -17,6 +18,7 @@ export function TimetablePage() {
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const timetableRef = useRef(null);
+  const loader = useStagedProgress({ busy, minDuration: 1000 });
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -40,13 +42,18 @@ export function TimetablePage() {
   const handleGenerate = async (preferences) => {
     setBusy(true);
     setError("");
-    setTimetable(null);
     setSaved(false);
+    loader.setStage(3);
     try {
       savePreferencesLocally(preferences);
+      loader.setProgress(45);
       const result = await generateTimetable(preferences);
+      loader.setStage(4);
+      loader.setProgress(88);
       setTimetable(result);
       await saveTimetable(user.uid, result);
+      loader.setStage(5);
+      loader.setProgress(98);
       setSaved(true);
     } catch (err) {
       setError(err.message || t("timetable_page.failed_generate"));
@@ -109,11 +116,15 @@ export function TimetablePage() {
         </>
       ) : (
         <>
-          {busy ? (
-            <div className="flex flex-col items-center justify-center rounded-3xl border border-border bg-surface p-16 shadow-sm">
-              <RefreshCw size={40} className="animate-spin text-primary" />
-              <p className="mt-6 text-lg font-black tracking-tight text-text-primary">{t("timetable.creating_plan")}</p>
+          {loader.visible ? (
+            <div className="flex flex-col items-center justify-center rounded-3xl border border-border bg-surface p-10 sm:p-16 shadow-sm text-center">
+              <RefreshCw size={40} className="animate-spin-slow text-primary" style={{ width: "clamp(2rem, 8vw, 2.5rem)", height: "clamp(2rem, 8vw, 2.5rem)" }} />
+              <p className="mt-6 text-lg font-black tracking-tight text-text-primary">{loader.stage}</p>
               <p className="mt-2 text-sm text-text-secondary">{t("timetable.balancing_text")}</p>
+              <div className="loading-progress-track mt-5 bg-background rounded-full overflow-hidden border border-border/50">
+                <div className="h-full bg-primary transition-all duration-500 ease-out" style={{ width: `${loader.progress}%` }} />
+              </div>
+              <p className="mt-2 text-xs font-bold tabular-nums text-text-muted">{Math.round(loader.progress)}%</p>
             </div>
           ) : (
             <TimetableForm onGenerate={handleGenerate} busy={busy} />

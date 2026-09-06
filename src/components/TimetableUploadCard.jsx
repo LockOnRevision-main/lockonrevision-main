@@ -9,6 +9,7 @@ import {
   subscribeTimetableDocuments,
   uploadTimetableDocuments,
 } from "../services/timetableService.js";
+import { useStagedProgress } from "../hooks/useStagedProgress.js";
 
 function getFileIcon(name, type) {
   if (type?.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(name)) return ImageIcon;
@@ -28,20 +29,14 @@ export function TimetableUploadCard({ timetableId }) {
   const [editName, setEditName] = useState("");
   const inputRef = useRef(null);
 
+  const isLoading = busy || processing;
+  const loader = useStagedProgress({ busy: isLoading, minDuration: 1000 });
+  const showOverlay = loader.visible;
+
   useEffect(() => {
     if (!user?.uid) return;
     return subscribeTimetableDocuments(user.uid, setDocs);
   }, [user?.uid]);
-
-  // Smooth loading: keep spinner visible ≥500ms to prevent flicker on fast ops
-  const showStatusSmooth = (msg, minMs = 500) => {
-    const start = Date.now();
-    setStatus(msg);
-    return () => {
-      const elapsed = Date.now() - start;
-      if (elapsed < minMs) setTimeout(() => {}, minMs - elapsed);
-    };
-  };
 
   const fileToBase64 = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -69,15 +64,17 @@ export function TimetableUploadCard({ timetableId }) {
     });
     if (!filtered.length) return;
     setBusy(true);
-    const start = Date.now();
-    setStatus("Uploading document…");
+    setProcessing(false);
+    setStatus("Uploading file(s)…");
+    loader.setStage(0);
     try {
-      await uploadTimetableDocuments(user.uid, filtered, p => setStatus(`Uploading document… ${p}%`));
+      await uploadTimetableDocuments(user.uid, filtered, p => {
+        loader.setProgress(Math.round((p / 100) * 20));
+        setStatus(`Uploading file(s)… ${p}%`);
+      });
+      loader.setStage(1);
       setStatus("Processing document…");
-      // Ensure spinner visible at least 600ms for Uploading
-      if (Date.now() - start < 600) await new Promise(r => setTimeout(r, 600 - (Date.now() - start)));
-      setStatus("Extracting exam schedule & syllabus…");
-      setProcessing(true);
+      loader.setProgress(32);
       // Build inline bytes (≤4MB per file to stay under serverless payload) to bypass Cloudinary 401 delivery
       const inlineFiles = [];
       for (const f of filtered) {
@@ -88,13 +85,22 @@ export function TimetableUploadCard({ timetableId }) {
         try {
           const b64 = await fileToBase64(f);
           inlineFiles.push({ name: f.name, type: f.type, contentBase64: b64 });
-          console.log(`[timetable] inline bytes ready`, { name: f.name, bytes: f.size });
         } catch (e) { console.warn(`[timetable] base64 failed for ${f.name}`, e.message); }
       }
-      setStatus("Generating learning content…");
+      loader.setStage(2);
+      setStatus("Extracting subjects/topics…");
+      setProcessing(true);
+      loader.setProgress(52);
+      setStatus("Generating timetable…");
+      loader.setStage(3);
       const result = await reprocessTimetableDocuments(user.uid, timetableId, inlineFiles);
-      setStatus("Saving results…");
-      await new Promise(r => setTimeout(r, 400));
+      loader.setStage(4);
+      setStatus("Saving to Firestore…");
+      loader.setProgress(88);
+      await new Promise(r => setTimeout(r, 350));
+      loader.setStage(5);
+      setStatus("Finalizing…");
+      loader.setProgress(96);
       if (result?.extracted) {
         setStatus(`Extracted ${result.extracted.assessments?.length || 0} assessments, ${result.extracted.syllabus?.length || 0} subjects – timetable updated`);
       } else {
@@ -136,14 +142,20 @@ export function TimetableUploadCard({ timetableId }) {
 
   const handleReprocess = async () => {
     setProcessing(true);
-    const start = Date.now();
+    loader.setStage(1);
     setStatus("Processing document…");
     try {
-      setStatus("Generating learning content…");
+      loader.setStage(2);
+      setStatus("Extracting subjects/topics…");
+      loader.setProgress(40);
+      setStatus("Generating timetable…");
+      loader.setStage(3);
       await reprocessTimetableDocuments(user.uid, timetableId);
-      if (Date.now() - start < 600) await new Promise(r => setTimeout(r, 600 - (Date.now() - start)));
-      setStatus("Saving results…");
-      await new Promise(r => setTimeout(r, 400));
+      loader.setStage(4);
+      setStatus("Saving to Firestore…");
+      loader.setProgress(88);
+      await new Promise(r => setTimeout(r, 300));
+      loader.setStage(5);
       setStatus(t("timetable.upload_reprocessed") || "Reprocessed successfully");
       setTimeout(() => setStatus(""), 3000);
     } catch(e) { setStatus(e.message); }
@@ -184,9 +196,18 @@ export function TimetableUploadCard({ timetableId }) {
       </label>
 
       {status ? (
-        <p className={`mt-3 rounded-xl border px-3 py-2 text-xs font-bold ${status.includes("failed")||status.includes("error") ? "border-status-error/20 bg-status-error/10 text-status-error" : "border-primary/20 bg-primary/5 text-text-secondary"}`}>
-          {busy||processing ? <RefreshCw size={12} className="inline animate-spin mr-1" /> : null}{status}
-        </p>
+        <div className={`mt-3 rounded-xl border px-3 py-3 text-xs font-bold ${status.includes("failed")||status.includes("error") ? "border-status-error/20 bg-status-error/10 text-status-error" : "border-primary/20 bg-primary/5 text-text-secondary"}`}>
+          <div className="flex items-center gap-2">
+            {showOverlay ? <RefreshCw size={12} className="inline animate-spin-slow shrink-0" /> : null}
+            <span className="flex-1">{showOverlay ? `${loader.stage} — ` : ""}{status}</span>
+            {showOverlay ? <span className="text-[11px] font-black tabular-nums">{Math.round(loader.progress)}%</span> : null}
+          </div>
+          {showOverlay ? (
+            <div className="mt-2 h-1.5 bg-background rounded-full overflow-hidden">
+              <div className="h-full bg-primary transition-all duration-500 ease-out" style={{ width: `${loader.progress}%` }} />
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       <div className="mt-5">
@@ -194,7 +215,7 @@ export function TimetableUploadCard({ timetableId }) {
           <h3 className="text-sm font-black text-text-primary">{t("timetable.uploaded_documents") || "Uploaded Documents"}</h3>
           {docs.length>0 ? (
             <button onClick={handleReprocess} disabled={processing||busy} className="flex items-center gap-1.5 rounded-xl border border-border bg-background px-3 py-1.5 text-xs font-bold text-text-secondary hover:border-primary disabled:opacity-50">
-              <RefreshCw size={12} className={processing?"animate-spin": ""} /> {t("timetable.reprocess") || "Re-run AI processing"}
+              <RefreshCw size={12} className={processing?"animate-spin-slow": ""} /> {t("timetable.reprocess") || "Re-run AI processing"}
             </button>
           ) : null}
         </div>

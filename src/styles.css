@@ -183,10 +183,60 @@ p, li, label, input, textarea, button {
   outline-offset: 2px;
 }
 
+/* ── Loading spinner: slow, deliberate, smooth (1.5–2.5s) ── */
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: transform;
+  transform: translateZ(0);
+}
+/* Override default animate-spin to be deliberate rather than frantic */
+.animate-spin {
+  animation-duration: 2s !important;
+  animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1) !important;
+  will-change: transform;
+}
+
+/* Responsive spinner sizing */
+.loading-spinner {
+  width: clamp(1.75rem, 6vw, 3rem);
+  height: clamp(1.75rem, 6vw, 3rem);
+  border-width: clamp(3px, 0.8vw, 4px);
+}
+.loading-spinner-lg {
+  width: clamp(2.5rem, 8vw, 3.5rem);
+  height: clamp(2.5rem, 8vw, 3.5rem);
+  border-width: clamp(3px, 0.9vw, 4px);
+}
+.loading-overlay-card {
+  width: min(22rem, 90vw);
+  padding: clamp(1.25rem, 4vw, 2rem);
+  gap: clamp(0.75rem, 2vw, 1rem);
+}
+.loading-overlay-title {
+  font-size: clamp(0.95rem, 2.8vw, 1.125rem);
+}
+.loading-overlay-subtitle {
+  font-size: clamp(0.75rem, 2.2vw, 0.875rem);
+}
+.loading-progress-track {
+  height: clamp(6px, 1.2vw, 8px);
+  width: clamp(14rem, 60vw, 18rem);
+}
+.loading-step-text {
+  font-size: clamp(0.7rem, 2vw, 0.8rem);
+}
+
 /* Reduce motion for accessibility */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+  .animate-spin, .animate-spin-slow {
+    animation-duration: 3s !important;
   }
 }

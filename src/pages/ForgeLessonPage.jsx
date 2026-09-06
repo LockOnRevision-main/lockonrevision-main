@@ -74,8 +74,11 @@ export function ForgeLessonPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[50vh]">
-        <div className="h-12 w-12 animate-spin rounded-full border-4 border-primary/20 border-t-primary" />
+      <div className="flex items-center justify-center min-h-[50vh] p-6">
+        <div className="flex flex-col items-center gap-3">
+          <div className="loading-spinner-lg animate-spin-slow rounded-full border-primary/20 border-t-primary" role="status" aria-label="Loading" style={{ willChange: "transform" }} />
+          <p className="text-sm font-bold uppercase tracking-widest text-text-muted">Loading lesson…</p>
+        </div>
       </div>
     );
   }
