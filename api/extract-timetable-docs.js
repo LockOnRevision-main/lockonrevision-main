@@ -107,9 +107,32 @@ export default requireAuth(async function handler(req, res) {
     const tempFiles = [];
 
     for (const file of files) {
+      // PRIORITY: inline bytes bypass Cloudinary delivery entirely (hybrid: persistent storage + direct Gemini ingest)
+      // This fixes 401 show_original_customer_untrusted / empty-body 401 on raw/authenticated assets
+      if (file.contentBase64) {
+        try {
+          const fileName = file.name || `file_${Date.now()}`;
+          const filePath = path.join('/tmp', `timetable_inline_${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`);
+          console.log(JSON.stringify({ stage: '[3b-alt] using inline bytes (bypass Cloudinary)', file: fileName, bytes: Math.round(file.contentBase64.length * 0.75) }));
+          const buf = Buffer.from(file.contentBase64, 'base64');
+          fs.writeFileSync(filePath, buf);
+          tempFiles.push(filePath);
+          console.log(JSON.stringify({ stage: '[4] Gemini request starting', file: fileName }));
+          const uploadResp = await googleAI.files.upload({
+            file: filePath,
+            config: { mimeType: file.type || 'application/octet-stream', displayName: fileName },
+          });
+          log.info('File uploaded to Gemini via inline bytes', { name: fileName, uri: uploadResp.uri });
+          console.log(JSON.stringify({ stage: '[5] Gemini request completed', file: fileName, uri: uploadResp.uri }));
+          geminiFiles.push({ fileUri: uploadResp.uri, mimeType: uploadResp.mimeType || file.type || 'application/octet-stream' });
+          continue;
+        } catch (e) {
+          console.log(JSON.stringify({ stage: '[3b-alt-failed] inline bytes failed, falling back to URL', file: file.name, error: e.message }));
+        }
+      }
       if (!file.url) {
         if (file.name && file.type?.includes('text')) continue;
-        log.warn('File without URL, skipping download', { name: file.name });
+        log.warn('File without URL and without inline bytes, skipping', { name: file.name });
         continue;
       }
       try { await validateUrl(file.url); } catch(e){ log.warn('URL validation failed', { name:file.name, error:e.message }); continue; }
@@ -118,35 +141,14 @@ export default requireAuth(async function handler(req, res) {
       const urlPassedToGemini = file.url;
       console.log(JSON.stringify({ stage: '[3b] urlPassedToGemini', urlPassedToGemini, public_id: file.publicId, resource_type: file.resourceType }));
       log.info('Downloading file', { name: file.name, url: urlPassedToGemini });
-      // Attempt download with Cloudinary untrusted fallback
+      // Cloudinary delivery – note: Basic Auth does NOT work on delivery URLs, so 401 here means
+      // preset is authenticated/private or account is untrusted. Inline bytes above is the real fix.
       let response = await fetch(urlPassedToGemini);
       if (!response.ok) {
         const errText = await response.text().catch(()=> '');
         console.log(JSON.stringify({ stage: '[3c] Cloudinary fetch failed', url: urlPassedToGemini, status: response.status, body: errText.slice(0,500) }));
-        // Handle Customer is marked as untrusted / 401 – try authenticated Cloudinary download
-        if (response.status === 401 && errText.includes('untrusted')) {
-          log.warn('Cloudinary untrusted 401 – trying authenticated fallback', { name: file.name, publicId: file.publicId });
-          // Try private download via Admin API with Basic Auth
-          const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
-          const apiKey = process.env.CLOUDINARY_API_KEY;
-          const apiSecret = process.env.CLOUDINARY_API_SECRET;
-          if (cloudName && apiKey && apiSecret && file.publicId) {
-            const rt = file.resourceType || 'raw';
-            // Admin API download endpoint for raw/image – returns 302 redirect to signed URL
-            const adminUrl = `https://api.cloudinary.com/v1_1/${cloudName}/resources/${rt}/upload/${encodeURIComponent(file.publicId)}`;
-            // Actually fetch the delivery via upload/download with auth header: use Basic auth on delivery URL
-            const b64 = Buffer.from(`${apiKey}:${apiSecret}`).toString('base64');
-            response = await fetch(urlPassedToGemini, { headers: { Authorization: `Basic ${b64}` } });
-            console.log(JSON.stringify({ stage: '[3d] retry with Basic Auth', status: response.status }));
-            if (!response.ok) {
-              // Fallback: try to generate signed delivery URL via privateDownloadUrl logic and fetch again
-              // For now, throw with clear guidance
-              const retryText = await response.text().catch(()=> '');
-              throw new Error(`Cloudinary delivery blocked (customer untrusted) for ${file.name}: ${response.status} ${retryText.slice(0,200)} – verify Cloudinary upload preset is public (type=upload, access_mode=public) or verify Cloudinary account email. Secure_url: ${urlPassedToGemini}`);
-            }
-          } else {
-            throw new Error(`Failed to download ${file.name}: ${response.status} – Cloudinary untrusted and no API credentials for fallback. Secure_url: ${urlPassedToGemini}`);
-          }
+        if (response.status === 401) {
+          throw new Error(`Failed to download ${file.name}: 401 Unauthorized from Cloudinary delivery (body empty means private/authenticated asset or untrusted account). Secure_url: ${urlPassedToGemini}. Fix: retry upload to send inline bytes (automatic), or Cloudinary dashboard → upload preset type=upload access_mode=public + verify account email.`);
         } else {
           throw new Error(`Failed to download ${file.name}: ${response.status} ${errText.slice(0,200)}`);
         }

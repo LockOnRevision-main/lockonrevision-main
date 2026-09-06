@@ -506,7 +506,8 @@ export async function renameTimetableDocument(uid, docId, newName) {
   await updateDoc(doc(db, "users", uid, TIMETABLE_DOCS_COLLECTION, docId), { name: newName, updatedAt: serverTimestamp() });
 }
 
-export async function reprocessTimetableDocuments(uid, timetableId) {
+export async function reprocessTimetableDocuments(uid, timetableId, inlineFiles = []) {
+  // inlineFiles: [{name, type, contentBase64}] – original bytes from this session, bypasses Cloudinary delivery 401
   // Fetch all docs + existing timetable to merge without losing completed sessions
   let docs = [];
   let currentTimetable = null;
@@ -522,13 +523,23 @@ export async function reprocessTimetableDocuments(uid, timetableId) {
       if (tSnap.exists()) currentTimetable = {id:tSnap.id, ...tSnap.data()};
     }
   }
+  // Attach inline bytes by filename match so backend prefers direct ingest over Cloudinary URL
+  const inlineByName = new Map((inlineFiles||[]).map(f=> [f.name, f]));
+  const filesForApi = docs.map(d=> {
+    const inline = inlineByName.get(d.name);
+    return {
+      url:d.url, name:d.name, type:d.type, publicId:d.publicId, resourceType:d.resourceType,
+      ...(inline?.contentBase64 ? { contentBase64: inline.contentBase64 } : {}),
+    };
+  });
+  console.log(`[timetable] reprocess: docs=${docs.length} inline=${inlineFiles.length} (bypass Cloudinary 401)`);
   // Gemini responsibility: ONLY analyse documents → structured JSON. Engine does scheduling.
   let extracted = null;
   let extractionErrors = [];
   try {
     const res = await apiFetch("/api/extract-timetable-docs", {
       method: "POST",
-      body: JSON.stringify({ files: docs.map(d=>({url:d.url, name:d.name, type:d.type, publicId:d.publicId})), preferredLanguage: i18n.language }),
+      body: JSON.stringify({ files: filesForApi, preferredLanguage: i18n.language }),
     });
     const data = await res.json().catch(()=> ({}));
     if (!res.ok) {

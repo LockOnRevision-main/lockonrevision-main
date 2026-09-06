@@ -43,6 +43,17 @@ export function TimetableUploadCard({ timetableId }) {
     };
   };
 
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = reader.result || "";
+      const b64 = String(res).includes(",") ? String(res).split(",")[1] : String(res);
+      resolve(b64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
   const handleFiles = async (fileList) => {
     const files = Array.from(fileList || []);
     if (!files.length) return;
@@ -67,8 +78,21 @@ export function TimetableUploadCard({ timetableId }) {
       if (Date.now() - start < 600) await new Promise(r => setTimeout(r, 600 - (Date.now() - start)));
       setStatus("Extracting exam schedule & syllabus…");
       setProcessing(true);
+      // Build inline bytes (≤4MB per file to stay under serverless payload) to bypass Cloudinary 401 delivery
+      const inlineFiles = [];
+      for (const f of filtered) {
+        if (f.size > 4 * 1024 * 1024) {
+          console.warn(`[timetable] ${f.name} >4MB, skipping inline bytes (will use URL, may 401)`);
+          continue;
+        }
+        try {
+          const b64 = await fileToBase64(f);
+          inlineFiles.push({ name: f.name, type: f.type, contentBase64: b64 });
+          console.log(`[timetable] inline bytes ready`, { name: f.name, bytes: f.size });
+        } catch (e) { console.warn(`[timetable] base64 failed for ${f.name}`, e.message); }
+      }
       setStatus("Generating learning content…");
-      const result = await reprocessTimetableDocuments(user.uid, timetableId);
+      const result = await reprocessTimetableDocuments(user.uid, timetableId, inlineFiles);
       setStatus("Saving results…");
       await new Promise(r => setTimeout(r, 400));
       if (result?.extracted) {
