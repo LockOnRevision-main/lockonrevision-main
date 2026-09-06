@@ -33,6 +33,16 @@ export function TimetableUploadCard({ timetableId }) {
     return subscribeTimetableDocuments(user.uid, setDocs);
   }, [user?.uid]);
 
+  // Smooth loading: keep spinner visible ≥500ms to prevent flicker on fast ops
+  const showStatusSmooth = (msg, minMs = 500) => {
+    const start = Date.now();
+    setStatus(msg);
+    return () => {
+      const elapsed = Date.now() - start;
+      if (elapsed < minMs) setTimeout(() => {}, minMs - elapsed);
+    };
+  };
+
   const handleFiles = async (fileList) => {
     const files = Array.from(fileList || []);
     if (!files.length) return;
@@ -48,20 +58,25 @@ export function TimetableUploadCard({ timetableId }) {
     });
     if (!filtered.length) return;
     setBusy(true);
-    setStatus(t("timetable.upload_uploading") || "Uploading...");
+    const start = Date.now();
+    setStatus("Uploading document…");
     try {
-      await uploadTimetableDocuments(user.uid, filtered, p => setStatus(`${t("timetable.upload_uploading") || "Uploading..."} ${p}%`));
-      setStatus(t("timetable.upload_done") || "Upload complete");
-      // Auto-process after upload (first upload generates, subsequent merges)
+      await uploadTimetableDocuments(user.uid, filtered, p => setStatus(`Uploading document… ${p}%`));
+      setStatus("Processing document…");
+      // Ensure spinner visible at least 600ms for Uploading
+      if (Date.now() - start < 600) await new Promise(r => setTimeout(r, 600 - (Date.now() - start)));
+      setStatus("Extracting exam schedule & syllabus…");
       setProcessing(true);
-      setStatus(t("timetable.upload_processing") || "Extracting & building timetable...");
+      setStatus("Generating learning content…");
       const result = await reprocessTimetableDocuments(user.uid, timetableId);
+      setStatus("Saving results…");
+      await new Promise(r => setTimeout(r, 400));
       if (result?.extracted) {
-        const count = (result.extracted.assessments?.length || 0) + (result.extracted.syllabus?.length || 0);
-        setStatus(`${t("timetable.upload_extracted") || "Extracted"} ${result.extracted.assessments?.length || 0} assessments, ${result.extracted.syllabus?.length || 0} subjects`);
+        setStatus(`Extracted ${result.extracted.assessments?.length || 0} assessments, ${result.extracted.syllabus?.length || 0} subjects – timetable updated`);
       } else {
-        setStatus(t("timetable.upload_processed") || "Processed");
+        setStatus("Processed – timetable updated");
       }
+      setTimeout(() => setStatus(""), 3500);
     } catch (e) {
       setStatus(e.message || "Upload failed");
     } finally {
@@ -97,10 +112,16 @@ export function TimetableUploadCard({ timetableId }) {
 
   const handleReprocess = async () => {
     setProcessing(true);
-    setStatus(t("timetable.upload_reprocessing") || "Reprocessing...");
+    const start = Date.now();
+    setStatus("Processing document…");
     try {
+      setStatus("Generating learning content…");
       await reprocessTimetableDocuments(user.uid, timetableId);
+      if (Date.now() - start < 600) await new Promise(r => setTimeout(r, 600 - (Date.now() - start)));
+      setStatus("Saving results…");
+      await new Promise(r => setTimeout(r, 400));
       setStatus(t("timetable.upload_reprocessed") || "Reprocessed successfully");
+      setTimeout(() => setStatus(""), 3000);
     } catch(e) { setStatus(e.message); }
     finally { setProcessing(false); }
   };

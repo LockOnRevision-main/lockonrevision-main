@@ -39,48 +39,85 @@ service cloud.firestore {
         || isAdmin();
       allow delete: if false;
 
+      // Generic fallback for any subcollection under users/{userId} – ensures new collections (timetableDocuments etc.) work
       match /{document=**} {
         allow read: if ownsUserDoc(userId) || isAdmin();
-        allow write: if isAdmin();
+        allow write: if ownsUserDoc(userId) || isAdmin();
       }
 
+      // Explicit per-collection writes (kept for clarity, covered by fallback above)
       match /subjects/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
         allow write: if ownsUserDoc(userId) || isAdmin();
       }
 
       match /units/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
         allow write: if ownsUserDoc(userId) || isAdmin();
       }
 
       match /subUnits/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
         allow write: if ownsUserDoc(userId) || isAdmin();
       }
 
       match /lessons/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
         allow write: if ownsUserDoc(userId) || isAdmin();
       }
 
       match /questions/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
         allow write: if ownsUserDoc(userId) || isAdmin();
       }
 
       match /answers/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
         allow write: if ownsUserDoc(userId) || isAdmin();
       }
 
       match /exerciseAnswers/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
         allow write: if ownsUserDoc(userId) || isAdmin();
       }
 
       match /files/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
         allow write: if ownsUserDoc(userId) || isAdmin();
       }
 
       match /forgeSources/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
         allow write: if ownsUserDoc(userId) || isAdmin();
       }
 
       match /timetables/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
+        allow write: if ownsUserDoc(userId) || isAdmin();
+      }
+
+      match /timetableDocuments/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
+        allow write: if ownsUserDoc(userId) || isAdmin();
+      }
+
+      match /timetableMetadata/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
+        allow write: if ownsUserDoc(userId) || isAdmin();
+      }
+
+      match /timetableMetadataHistory/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
+        allow write: if ownsUserDoc(userId) || isAdmin();
+      }
+
+      match /mastery/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
+        allow write: if ownsUserDoc(userId) || isAdmin();
+      }
+
+      match /sessions/{docId} {
+        allow read: if ownsUserDoc(userId) || isAdmin();
         allow write: if ownsUserDoc(userId) || isAdmin();
       }
     }

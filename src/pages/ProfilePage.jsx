@@ -595,10 +595,24 @@ export function ProfilePage() {
             </div>
           </div>
 
+          {/* Settings – Stats for Nerds (Coming Soon) */}
+          <div className="p-6 rounded-3xl border border-border bg-surface shadow-sm">
+            <h3 className="text-lg font-black mb-4 flex items-center gap-2 text-text-primary">
+              <Settings size={20} className="text-primary" />
+              Settings
+            </h3>
+            <label className="flex items-center gap-3 rounded-xl border border-border bg-background p-3 opacity-60">
+              <input type="checkbox" disabled className="h-4 w-4 rounded border-border" />
+              <span className="text-sm font-bold text-text-primary">Enable "Stats for Nerds" (Coming Soon)</span>
+              <span className="ml-auto rounded-full bg-warning/20 px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-warning">Soon</span>
+            </label>
+            <p className="mt-2 text-xs text-text-muted">When available: upload latency, AI generation time, Firestore read/write durations, cache status, network requests, retry counts, processing stages, device & browser info.</p>
+          </div>
+
           {/* Account Information */}
           <div className="p-6 rounded-3xl border border-border bg-surface shadow-sm">
             <h3 className="text-lg font-black mb-6 flex items-center gap-2 text-text-primary">
-              <Settings size={20} className="text-primary" />
+              <Shield size={20} className="text-primary" />
               {t("profile.account_information")}
             </h3>
             <div className="space-y-3">
