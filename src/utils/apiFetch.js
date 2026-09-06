@@ -20,11 +20,25 @@ export async function apiFetch(url, options = {}) {
   if (!headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  if (auth?.currentUser) {
+  // Ensure Firebase auth is ready before attempting to attach token – prevents race where currentUser is null on page reload
+  // Mirrors working Forge endpoints (identical implementation)
+  if (auth) {
     try {
-      const token = await auth.currentUser.getIdToken();
-      headers["Authorization"] = `Bearer ${token}`;
-    } catch {}
+      // Wait for auth state to be ready (no-op if already ready) – avoids missing Bearer on first call after refresh
+      if (typeof auth.authStateReady === 'function') {
+        await auth.authStateReady();
+      }
+      const current = auth.currentUser;
+      if (current) {
+        const token = await current.getIdToken();
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+      } else if (!headers["Authorization"]) {
+        // No user yet – still proceed; server will return 401 with clear message (not 500)
+        console.warn(`[apiFetch] No Firebase user for ${url} – request will be unauthenticated`);
+      }
+    } catch (e) {
+      console.warn(`[apiFetch] Failed to get ID token for ${url}`, e?.message);
+    }
   }
   const response = await fetch(resolveUrl(url), { ...options, headers });
   return response;

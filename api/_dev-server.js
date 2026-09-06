@@ -26,6 +26,7 @@ const routes = {
   '/api/ask-forge-assistant': () => import('./ask-forge-assistant.js'),
   '/api/generate-forge-structure': () => import('./generate-forge-structure.js'),
   '/api/process-uploaded-notes': () => import('./process-uploaded-notes.js'),
+  '/api/extract-timetable-docs': () => import('./extract-timetable-docs.js'),
   '/api/generate-learning-content': () => import('./generate-learning-content.js'),
   '/api/generate-question-hint': () => import('./generate-question-hint.js'),
   '/api/explain-wrong-answer': () => import('./explain-wrong-answer.js'),
