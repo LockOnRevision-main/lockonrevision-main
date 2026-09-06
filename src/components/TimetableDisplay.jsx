@@ -116,8 +116,8 @@ export function TimetableDisplay({ timetable, onRegenerate }) {
         </div>
       ) : null}
 
-      {/* Week grid */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7">
+      {/* Week grid – vertical on <md, fluid on larger */}
+      <div className="timetable-week-grid grid gap-4 grid-cols-1 xs:grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 3xl:grid-cols-7">
         {DAYS.map((day, dayIdx) => {
           const slots = week.days?.[day] || [];
           if (!slots.length) {

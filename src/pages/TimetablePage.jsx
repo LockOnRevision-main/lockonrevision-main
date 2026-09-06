@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useAuth } from "../context/AuthContext.jsx";
 import { TimetableDisplay } from "../components/TimetableDisplay.jsx";
 import { TimetableForm } from "../components/TimetableForm.jsx";
+import { TimetableUploadCard } from "../components/TimetableUploadCard.jsx";
 
 import { generateTimetable, savePreferencesLocally, saveTimetable, subscribeTimetables } from "../services/timetableService.js";
 import { setupTimetableIntegration } from "../services/timetableIntegration.js";
@@ -87,6 +88,9 @@ export function TimetablePage() {
           {t("timetable_page.saved")}
         </p>
       ) : null}
+
+      {/* Upload Documents – always visible, fulfills Pipeline Exists, UI Missing */}
+      <TimetableUploadCard timetableId={timetable?.id} />
 
       {timetable ? (
         <>

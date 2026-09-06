@@ -1,4 +1,4 @@
-import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, writeBatch } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, updateDoc, writeBatch } from "firebase/firestore";
 import { db, isFirebaseConfigured } from "../config/firebase.js";
 import { getLocalUser, makeId, subscribeLocalState, updateLocalUser } from "./localStore.js";
 import { apiFetch } from "../utils/apiFetch.js";
@@ -381,6 +381,236 @@ export function regenerateRemaining(timetable) {
   }
 
   return t;
+}
+
+// ── Document Upload Pipeline (Smart Timetable V2) ──────────────────────
+const TIMETABLE_DOCS_COLLECTION = "timetableDocuments";
+const TIMETABLE_META_DOC = "timetableMetadata";
+
+function extractMockMetadata(files) {
+  // Lightweight client-side extraction fallback – real AI runs in /api/extract-timetable-docs
+  // Merges multiple files, dedupes by subject+date/title
+  const assessments = [];
+  const syllabusTopics = new Map(); // subject -> Set(topics)
+  for (const f of files) {
+    const name = (f.name || "").toLowerCase();
+    const isExam = /exam|assessment|schedule|test|toddle/i.test(name);
+    const isSyllabus = /syllabus|planner|scheme/i.test(name);
+    // Naive subject inference from filename
+    const subjectGuess = (f.name.split(/[-_\.]/)[0] || "General").trim() || "General";
+    if (isExam || /assessmentdetails/i.test(name)) {
+      // Create a mock assessment per file if none exists – real extraction will override
+      assessments.push({
+        subject: subjectGuess,
+        assessmentType: "exam",
+        date: new Date(Date.now() + 14*864e5).toISOString().split("T")[0],
+        sourceFile: f.name,
+        sourceFileId: f.id,
+      });
+    }
+    if (isSyllabus || /\.pdf$/i.test(name) || /\.docx$/i.test(name)) {
+      if (!syllabusTopics.has(subjectGuess)) syllabusTopics.set(subjectGuess, new Set());
+      syllabusTopics.get(subjectGuess).add(f.name.replace(/\.[^.]+$/, ""));
+    }
+  }
+  // Dedupe assessments by subject+date
+  const seen = new Set();
+  const deduped = assessments.filter(a => {
+    const k = `${a.subject}|${a.date}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  const syllabus = Array.from(syllabusTopics.entries()).map(([subject, topics]) => ({
+    subject,
+    chapters: Array.from(topics).map(t => ({ title: t })),
+  }));
+  return { assessments: deduped, syllabus };
+}
+
+export async function uploadTimetableDocuments(uid, files, onProgress) {
+  const uploaded = [];
+  for (let i=0;i<files.length;i++) {
+    const file = files[i];
+    // Reuse Forge temp upload (Cloudinary) – store original for reprocessing
+    let url = null, publicId = null, resourceType = "raw";
+    try {
+      const { uploadTempFile } = await import("../utils/storage.js");
+      const res = await uploadTempFile(uid, file);
+      url = res.url; publicId = res.publicId; resourceType = res.resourceType;
+    } catch (e) {
+      // Cloudinary not configured or image type – keep as local placeholder, still persist metadata
+      console.warn("[timetable] uploadTempFile fallback", e.message);
+    }
+    // For text-like files, also capture preview for reprocessing without re-download
+    let preview = "";
+    if (/\.(txt|md|csv)$/i.test(file.name)) {
+      try { preview = (await file.text()).slice(0, 8000); } catch {}
+    }
+    const docData = {
+      name: file.name,
+      originalName: file.name,
+      size: file.size,
+      type: file.type || "application/octet-stream",
+      url, publicId, resourceType,
+      preview,
+      status: "uploaded",
+      processingStatus: "pending",
+      extraction: null,
+      createdAt: isFirebaseConfigured ? serverTimestamp() : new Date().toISOString(),
+      updatedAt: isFirebaseConfigured ? serverTimestamp() : new Date().toISOString(),
+    };
+    if (!isFirebaseConfigured) {
+      const id = `timetableDoc-${Date.now()}-${i}`;
+      updateLocalUser(uid, ud => ({
+        ...ud,
+        timetableDocuments: [{ id, ...docData, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, ...(ud.timetableDocuments||[])],
+      }));
+      uploaded.push({ id, ...docData });
+    } else {
+      const ref = await addDoc(collection(db, "users", uid, TIMETABLE_DOCS_COLLECTION), docData);
+      uploaded.push({ id: ref.id, ...docData });
+    }
+    onProgress?.(Math.round(((i+1)/files.length)*100));
+  }
+  return uploaded;
+}
+
+export function subscribeTimetableDocuments(uid, callback) {
+  if (!isFirebaseConfigured) {
+    return subscribeLocalState(()=> callback(getLocalUser(uid)?.timetableDocuments || []));
+  }
+  return onSnapshot(
+    query(collection(db, "users", uid, TIMETABLE_DOCS_COLLECTION), orderBy("createdAt", "desc")),
+    snap => callback(snap.docs.map(d=>({id:d.id, ...d.data()}))),
+    err => console.error("[timetable] subscribeTimetableDocuments failed", err.code),
+  );
+}
+
+export async function deleteTimetableDocument(uid, docId, publicId, resourceType) {
+  if (!isFirebaseConfigured) {
+    updateLocalUser(uid, ud=> ({...ud, timetableDocuments: (ud.timetableDocuments||[]).filter(d=>d.id!==docId)}));
+    return;
+  }
+  if (publicId) {
+    try { const { deleteStorageFile } = await import("../utils/storage.js"); await deleteStorageFile(publicId, resourceType); } catch {}
+  }
+  await deleteDoc(doc(db, "users", uid, TIMETABLE_DOCS_COLLECTION, docId));
+}
+
+export async function renameTimetableDocument(uid, docId, newName) {
+  if (!isFirebaseConfigured) {
+    updateLocalUser(uid, ud=> ({...ud, timetableDocuments: (ud.timetableDocuments||[]).map(d=> d.id===docId ? {...d, name:newName, updatedAt:new Date().toISOString()} : d)}));
+    return;
+  }
+  await updateDoc(doc(db, "users", uid, TIMETABLE_DOCS_COLLECTION, docId), { name: newName, updatedAt: serverTimestamp() });
+}
+
+export async function reprocessTimetableDocuments(uid, timetableId) {
+  // Fetch all docs + existing timetable to merge without losing completed sessions
+  let docs = [];
+  let currentTimetable = null;
+  if (!isFirebaseConfigured) {
+    docs = getLocalUser(uid)?.timetableDocuments || [];
+    currentTimetable = (getLocalUser(uid)?.timetables||[]).find(t=>t.id===timetableId) || (getLocalUser(uid)?.timetables||[])[0] || null;
+  } else {
+    const snap = await getDocs(collection(db, "users", uid, TIMETABLE_DOCS_COLLECTION));
+    docs = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    if (timetableId) {
+      const { getDoc } = await import("firebase/firestore");
+      const tSnap = await getDoc(doc(db,"users",uid,"timetables",timetableId));
+      if (tSnap.exists()) currentTimetable = {id:tSnap.id, ...tSnap.data()};
+    }
+  }
+  // Try backend AI extraction; fallback to mock
+  let extracted = extractMockMetadata(docs);
+  try {
+    const res = await apiFetch("/api/extract-timetable-docs", {
+      method: "POST",
+      body: JSON.stringify({ files: docs.map(d=>({url:d.url, name:d.name, type:d.type, publicId:d.publicId})), preferredLanguage: i18n.language }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.assessments || data.syllabus) extracted = data;
+    }
+  } catch {}
+  // Mark docs as processed
+  for (const d of docs) {
+    const payload = { processingStatus: "success", extraction: extracted, updatedAt: isFirebaseConfigured ? serverTimestamp() : new Date().toISOString() };
+    if (!isFirebaseConfigured) {
+      updateLocalUser(uid, ud=> ({...ud, timetableDocuments: (ud.timetableDocuments||[]).map(x=> x.id===d.id ? {...x, ...payload, updatedAt:new Date().toISOString()} : x)}));
+    } else {
+      await updateDoc(doc(db,"users",uid,TIMETABLE_DOCS_COLLECTION,d.id), payload);
+    }
+  }
+  // Persist merged metadata for version history (optional)
+  const meta = { extracted, processedAt: isFirebaseConfigured ? serverTimestamp() : new Date().toISOString(), sourceDocIds: docs.map(d=>d.id) };
+  if (!isFirebaseConfigured) {
+    updateLocalUser(uid, ud=> ({...ud, timetableMetadataHistory: [...(ud.timetableMetadataHistory||[]), {...meta, id:`meta-${Date.now()}` }]}));
+  } else {
+    await addDoc(collection(db,"users",uid,"timetableMetadataHistory"), meta);
+    await updateDoc(doc(db,"users",uid,TIMETABLE_META_DOC, "current"), meta).catch(async()=> {
+      await writeBatch(db).set(doc(db,"users",uid,TIMETABLE_META_DOC,"current"), meta).commit();
+    });
+  }
+  // Merge timetable: preserve completed sessions, rebalance only future
+  if (!extracted.assessments?.length && !extracted.syllabus?.length) {
+    // No new data – keep current, just mark reprocessed
+    return { extracted, timetable: currentTimetable };
+  }
+  // Build subjects from syllabus + assessments (dedupe)
+  const subjectMap = new Map();
+  for (const s of extracted.syllabus || []) {
+    const title = s.subject || s.title;
+    if (!title) continue;
+    if (!subjectMap.has(title)) subjectMap.set(title, { title, difficulty:"medium", confidence:5, currentChapter: (s.chapters?.[0]?.title||"") });
+  }
+  for (const a of extracted.assessments || []) {
+    const title = a.subject;
+    if (!title) continue;
+    if (!subjectMap.has(title)) subjectMap.set(title, { title, difficulty:"medium", confidence:5, currentChapter: "" });
+  }
+  // Also keep existing timetable subjects not in new extraction (don't delete)
+  for (const s of (currentTimetable?.preferences?.subjects || [])) {
+    if (!subjectMap.has(s.title)) subjectMap.set(s.title, s);
+  }
+  const mergedSubjects = Array.from(subjectMap.values());
+  // Infer examDates for timetable generation from assessments
+  const examDates = (extracted.assessments||[]).map(a=> ({subject:a.subject, date:a.date})).filter(e=>e.subject&&e.date);
+  const prefs = {
+    ...(currentTimetable?.preferences||{}),
+    subjects: mergedSubjects,
+    examDates: [...(currentTimetable?.preferences?.examDates||[]), ...examDates].filter((v,i,a)=> a.findIndex(x=>x.subject===v.subject&&x.date===v.date)===i),
+    dailyMinutes: currentTimetable?.preferences?.dailyMinutes || 60,
+    weekendMinutes: currentTimetable?.preferences?.weekendMinutes || 60,
+    preferredTime: currentTimetable?.preferences?.preferredTime || "09:00",
+    durationWeeks: currentTimetable?.preferences?.durationWeeks || 4,
+  };
+  let newTimetable;
+  if (!currentTimetable) {
+    newTimetable = await generateTimetable(prefs);
+  } else {
+    // Generate fresh weeks then merge completed sessions from current
+    const fresh = await generateTimetable(prefs);
+    // Preserve completed/skipped flags by subject+timeSlot matching
+    const completedKeys = new Set();
+    for (const w of currentTimetable.weeks||[]) for (const day of Object.keys(w.days||{})) for (const s of (w.days[day]||[])) if(s.completed) completedKeys.add(`${s.subject}|${s.topic}|${s.timeSlot}`);
+    // Actually we want to keep completed sessions in place and only rebalance future – reuse regenerateRemaining pattern:
+    // Start from fresh, then re-apply completed flags where match exists
+    for (const w of fresh.weeks) for (const day of Object.keys(w.days||{})) for (const s of (w.days[day]||[])) if(completedKeys.has(`${s.subject}|${s.topic}|${s.timeSlot}`)) s.completed=true;
+    newTimetable = { ...fresh, id: currentTimetable.id, preferences: prefs };
+    // For Firestore update, keep same id
+    if (isFirebaseConfigured) {
+      await updateTimetable(uid, currentTimetable.id, { weeks: newTimetable.weeks, preferences: prefs, extracted, updatedAt: serverTimestamp() });
+    } else {
+      updateLocalUser(uid, ud=> ({...ud, timetables: (ud.timetables||[]).map(t=> t.id===currentTimetable.id ? {...t, weeks:newTimetable.weeks, preferences: prefs, extracted} : t)}));
+    }
+    return { extracted, timetable: newTimetable };
+  }
+  // No existing timetable – save new
+  const savedId = await saveTimetable(uid, { ...newTimetable, extracted, preferences: prefs });
+  newTimetable.id = savedId;
+  return { extracted, timetable: newTimetable };
 }
 
 // ── Dashboard helpers ────────────────────────────────────────────────

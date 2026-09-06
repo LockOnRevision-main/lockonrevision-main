@@ -401,7 +401,7 @@ function MatchPairs({ exercise, userAnswer: _userAnswer, onAnswer }) {
     <div>
       <h3 className="text-lg font-bold text-text-primary mb-4">{exercise.question}</h3>
       <p className="text-sm text-text-secondary mb-4">{t("lesson.match_pairs_instruction")}</p>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 xs:grid-cols-2 gap-3 sm:gap-4">
         <div className="space-y-2">
           {leftItems.map((item) => (
             <button

@@ -73,11 +73,33 @@ html {
   background: var(--color-background);
   color: var(--color-text-primary);
   transition: background-color 0.3s ease, color 0.3s ease;
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
   margin: 0;
   min-width: 320px;
+}
+
+/* Cross-browser: ensure media elements never overflow */
+img, video, canvas, svg, iframe {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Respect browser zoom up to 200%: use relative units, no fixed viewport locks */
+@media (max-width: 480px) {
+  html { font-size: 14px; }
+}
+@media (min-width: 1920px) {
+  html { font-size: 17px; }
 }
 
 button,
@@ -86,6 +108,15 @@ a {
   font: inherit;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+/* Accessible touch targets 44px, keyboard-friendly */
+button, [role="button"], input[type="button"], input[type="submit"] {
+  min-height: 44px;
+}
+input, textarea, select {
+  min-height: 44px;
+}
+textarea { min-height: 88px; }
 
 button:disabled {
   cursor: not-allowed;
@@ -111,4 +142,51 @@ button:disabled {
 }
 .scrollbar-none::-webkit-scrollbar {
   display: none;
+}
+
+/* Responsive typography: fluid via clamp, prevents oversized text on small */
+h1 {
+  font-size: clamp(1.75rem, 4vw + 0.5rem, 2.75rem);
+  line-height: 1.1;
+  overflow-wrap: break-word;
+}
+h2 {
+  font-size: clamp(1.25rem, 3vw + 0.5rem, 1.875rem);
+  line-height: 1.2;
+  overflow-wrap: break-word;
+}
+h3 {
+  font-size: clamp(1rem, 2vw + 0.5rem, 1.25rem);
+}
+p, li, label, input, textarea, button {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* Cards: fluid wrap + consistent spacing + avoid overlap/clip */
+.card-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+}
+
+/* Timetable: vertical on small screens, controls stay visible */
+@media (max-width: 768px) {
+  .timetable-week-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Focus visible for keyboard navigation + screen reader */
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Reduce motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
