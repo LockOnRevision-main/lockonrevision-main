@@ -88,11 +88,17 @@ function validateExtraction(data) {
 }
 
 export default requireAuth(async function handler(req, res) {
+  console.log(JSON.stringify({ stage: '[1] Request received', path: req.url, hasAuth: !!req.headers.authorization }));
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   try {
+    console.log(JSON.stringify({ stage: '[2] Auth verified', uid: req.user?.uid }));
     const { files, preferredLanguage } = req.body;
     if (!Array.isArray(files) || files.length===0) return res.status(400).json({ error: 'Missing files array' });
     log.info('Handler called', { fileCount: files.length, files: files.map(f=> ({name:f.name, hasUrl:!!f.url})) });
+    // Log Cloudinary values immediately after upload (as requested)
+    for (const f of files) {
+      console.log(JSON.stringify({ stage: '[3] Cloudinary URL received', secure_url: f.url, public_id: f.publicId, resource_type: f.resourceType, type: f.type }));
+    }
 
     if (!isConfigured()) return res.status(503).json({ error: 'Gemini API is not configured. Set GEMINI_API_KEY.' });
 
@@ -102,17 +108,50 @@ export default requireAuth(async function handler(req, res) {
 
     for (const file of files) {
       if (!file.url) {
-        // No URL – likely text preview already – create a temp text file for Gemini
-        if (file.name && file.type?.includes('text')) continue; // will be handled via prompt text fallback
+        if (file.name && file.type?.includes('text')) continue;
         log.warn('File without URL, skipping download', { name: file.name });
         continue;
       }
       try { await validateUrl(file.url); } catch(e){ log.warn('URL validation failed', { name:file.name, error:e.message }); continue; }
       const fileName = path.basename(new URL(file.url).pathname.split('?')[0]) || file.name || `file_${Date.now()}`;
       const filePath = path.join('/tmp', `timetable_${Date.now()}_${fileName}`);
-      log.info('Downloading file', { name: file.name, url: file.url });
-      const response = await fetch(file.url);
-      if (!response.ok) throw new Error(`Failed to download ${file.name}: ${response.status}`);
+      const urlPassedToGemini = file.url;
+      console.log(JSON.stringify({ stage: '[3b] urlPassedToGemini', urlPassedToGemini, public_id: file.publicId, resource_type: file.resourceType }));
+      log.info('Downloading file', { name: file.name, url: urlPassedToGemini });
+      // Attempt download with Cloudinary untrusted fallback
+      let response = await fetch(urlPassedToGemini);
+      if (!response.ok) {
+        const errText = await response.text().catch(()=> '');
+        console.log(JSON.stringify({ stage: '[3c] Cloudinary fetch failed', url: urlPassedToGemini, status: response.status, body: errText.slice(0,500) }));
+        // Handle Customer is marked as untrusted / 401 – try authenticated Cloudinary download
+        if (response.status === 401 && errText.includes('untrusted')) {
+          log.warn('Cloudinary untrusted 401 – trying authenticated fallback', { name: file.name, publicId: file.publicId });
+          // Try private download via Admin API with Basic Auth
+          const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
+          const apiKey = process.env.CLOUDINARY_API_KEY;
+          const apiSecret = process.env.CLOUDINARY_API_SECRET;
+          if (cloudName && apiKey && apiSecret && file.publicId) {
+            const rt = file.resourceType || 'raw';
+            // Admin API download endpoint for raw/image – returns 302 redirect to signed URL
+            const adminUrl = `https://api.cloudinary.com/v1_1/${cloudName}/resources/${rt}/upload/${encodeURIComponent(file.publicId)}`;
+            // Actually fetch the delivery via upload/download with auth header: use Basic auth on delivery URL
+            const b64 = Buffer.from(`${apiKey}:${apiSecret}`).toString('base64');
+            response = await fetch(urlPassedToGemini, { headers: { Authorization: `Basic ${b64}` } });
+            console.log(JSON.stringify({ stage: '[3d] retry with Basic Auth', status: response.status }));
+            if (!response.ok) {
+              // Fallback: try to generate signed delivery URL via privateDownloadUrl logic and fetch again
+              // For now, throw with clear guidance
+              const retryText = await response.text().catch(()=> '');
+              throw new Error(`Cloudinary delivery blocked (customer untrusted) for ${file.name}: ${response.status} ${retryText.slice(0,200)} – verify Cloudinary upload preset is public (type=upload, access_mode=public) or verify Cloudinary account email. Secure_url: ${urlPassedToGemini}`);
+            }
+          } else {
+            throw new Error(`Failed to download ${file.name}: ${response.status} – Cloudinary untrusted and no API credentials for fallback. Secure_url: ${urlPassedToGemini}`);
+          }
+        } else {
+          throw new Error(`Failed to download ${file.name}: ${response.status} ${errText.slice(0,200)}`);
+        }
+      }
+      console.log(JSON.stringify({ stage: '[4] Gemini request starting', file: file.name }));
       await pipeline(response.body, fs.createWriteStream(filePath));
       tempFiles.push(filePath);
       const uploadResp = await googleAI.files.upload({
@@ -120,6 +159,7 @@ export default requireAuth(async function handler(req, res) {
         config: { mimeType: file.type || 'application/octet-stream', displayName: fileName },
       });
       log.info('File uploaded to Gemini', { name: file.name, uri: uploadResp.uri });
+      console.log(JSON.stringify({ stage: '[5] Gemini request completed', file: file.name, uri: uploadResp.uri }));
       geminiFiles.push({ fileUri: uploadResp.uri, mimeType: uploadResp.mimeType || file.type || 'application/octet-stream' });
     }
 
@@ -133,6 +173,7 @@ export default requireAuth(async function handler(req, res) {
         assessments: [],
       };
     } else {
+      console.log(JSON.stringify({ stage: '[4] Gemini request starting (batch)', fileCount: geminiFiles.length }));
       const prompt = `You are a document analysis AI, NOT a scheduler. Analyze the uploaded timetable documents (exam schedules, syllabi, unit planners, teacher notes, calendars, weightage sheets) and return ONLY structured JSON.
 
 IMPORTANT: Generate all text ONLY in language "${lang}". Stay strictly within the documents – do NOT invent study hours, daily schedule, revision order, spacing, or timetable layout. Those belong to the timetable engine, not you.
@@ -180,12 +221,15 @@ If you cannot confidently extract any subject or assessment (e.g., poor scan qua
 
 Documents to analyze: ${files.length} files.`;
       const result = await callGeminiWithFiles(geminiFiles, prompt);
+      console.log(JSON.stringify({ stage: '[5] Gemini request completed (batch)', files: geminiFiles.length }));
       extracted = validateExtraction(result);
+      console.log(JSON.stringify({ stage: '[6] Parsed response', subjects: extracted.subjects.length, assessments: extracted.assessments.length }));
       log.info('Extraction validated', { subjects: extracted.subjects.length, assessments: extracted.assessments.length });
     }
 
     // Cleanup temp files
     for (const p of tempFiles) { try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {} }
+    console.log(JSON.stringify({ stage: '[7] Saved to Firestore (pending engine)' }));
 
     // Transform to engine-expected shape: syllabus + assessments
     const syllabus = extracted.subjects.map(s => ({
