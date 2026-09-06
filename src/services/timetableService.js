@@ -522,21 +522,63 @@ export async function reprocessTimetableDocuments(uid, timetableId) {
       if (tSnap.exists()) currentTimetable = {id:tSnap.id, ...tSnap.data()};
     }
   }
-  // Try backend AI extraction; fallback to mock
-  let extracted = extractMockMetadata(docs);
+  // Gemini responsibility: ONLY analyse documents → structured JSON. Engine does scheduling.
+  let extracted = null;
+  let extractionErrors = [];
   try {
     const res = await apiFetch("/api/extract-timetable-docs", {
       method: "POST",
       body: JSON.stringify({ files: docs.map(d=>({url:d.url, name:d.name, type:d.type, publicId:d.publicId})), preferredLanguage: i18n.language }),
     });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.assessments || data.syllabus) extracted = data;
+    const data = await res.json().catch(()=> ({}));
+    if (!res.ok) {
+      // Per spec: explain which file failed and why, never generate from guessed data
+      const reason = data.error || data.details || `Extraction failed (${res.status})`;
+      extractionErrors = data.errors || docs.map(d=> ({ file: d.name, reason }));
+      throw new Error(reason);
     }
-  } catch {}
-  // Mark docs as processed
+    if (data.errors?.length) extractionErrors = data.errors;
+    if (data.subjects || data.assessments || data.syllabus) {
+      extracted = data;
+    }
+  } catch (e) {
+    if (!extracted) {
+      // Only fallback to mock if API unavailable (e.g., local dev without key); otherwise propagate error
+      const isConfigError = /GEMINI_API|503/i.test(e.message);
+      if (isConfigError) {
+        console.warn("[timetable] extraction API unavailable, using mock fallback", e.message);
+        extracted = extractMockMetadata(docs);
+      } else {
+        // Mark docs as failed per file
+        const failedPayload = (docId, reason) => ({
+          processingStatus: "failed",
+          processingError: String(reason).slice(0,500),
+          updatedAt: isFirebaseConfigured ? serverTimestamp() : new Date().toISOString(),
+        });
+        for (const err of (extractionErrors.length ? extractionErrors : [{file:"unknown", reason:e.message}])) {
+          const target = docs.find(d=> d.name===err.file) || docs[0];
+          if (!target) continue;
+          const payload = failedPayload(target.id, err.reason || e.message);
+          if (!isFirebaseConfigured) {
+            updateLocalUser(uid, ud=> ({...ud, timetableDocuments: (ud.timetableDocuments||[]).map(x=> x.id===target.id ? {...x, ...payload, updatedAt:new Date().toISOString()} : x)}));
+          } else {
+            await updateDoc(doc(db,"users",uid,TIMETABLE_DOCS_COLLECTION,target.id), payload);
+          }
+        }
+        throw new Error(extractionErrors[0]?.reason || e.message);
+      }
+    }
+  }
+  if (!extracted) extracted = extractMockMetadata(docs);
+  // Mark docs as processed – success only if we have structured data
+  const isSuccess = (extracted.subjects?.length || extracted.syllabus?.length || extracted.assessments?.length);
   for (const d of docs) {
-    const payload = { processingStatus: "success", extraction: extracted, updatedAt: isFirebaseConfigured ? serverTimestamp() : new Date().toISOString() };
+    const payload = {
+      processingStatus: isSuccess ? "success" : "failed",
+      processingError: isSuccess ? null : "Could not extract subjects/assessments – poor scan quality or insufficient text",
+      extraction: extracted,
+      updatedAt: isFirebaseConfigured ? serverTimestamp() : new Date().toISOString()
+    };
     if (!isFirebaseConfigured) {
       updateLocalUser(uid, ud=> ({...ud, timetableDocuments: (ud.timetableDocuments||[]).map(x=> x.id===d.id ? {...x, ...payload, updatedAt:new Date().toISOString()} : x)}));
     } else {

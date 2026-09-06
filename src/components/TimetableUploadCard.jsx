@@ -192,9 +192,12 @@ export function TimetableUploadCard({ timetableId }) {
                       <p className="truncate text-sm font-bold text-text-primary">{doc.name}</p>
                     )}
                     <p className="text-[11px] text-text-muted">
-                      {(doc.size/1024).toFixed(1)} KB • {doc.processingStatus==="success" ? <span className="text-status-success font-bold inline-flex items-center gap-1"><Check size={10}/> {t("timetable.extracted_ok")||"extracted"}</span> : doc.processingStatus==="pending" ? t("timetable.pending")||"pending" : doc.processingStatus}
+                      {(doc.size/1024).toFixed(1)} KB • {doc.processingStatus==="success" ? <span className="text-status-success font-bold inline-flex items-center gap-1"><Check size={10}/> {t("timetable.extracted_ok")||"extracted"}</span> : doc.processingStatus==="failed" ? <span className="text-status-error font-bold">{doc.processingError || "extraction failed"}</span> : doc.processingStatus==="pending" ? t("timetable.pending")||"pending" : doc.processingStatus}
                       {doc.extraction?.assessments?.length ? ` • ${doc.extraction.assessments.length} assessments` : ""}
                     </p>
+                    {doc.processingStatus==="failed" && doc.processingError ? (
+                      <p className="mt-1 text-[11px] text-status-error">Failed: {doc.processingError} – please retry with a clearer scan or replace the document.</p>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-1">
                     {isEditing ? (
