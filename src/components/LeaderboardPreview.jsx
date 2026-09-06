@@ -100,7 +100,7 @@ export function LeaderboardPreview({ users, currentUserId }) {
 
             <div className="min-w-0 flex-1">
               <p className="flex items-center gap-2 truncate text-sm font-black text-text-primary">
-                {entry.name || entry.email?.split("@")[0] || t("common.learner")}
+                {entry.name || entry.displayName || entry.username || entry.email?.split("@")[0] || t("common.learner")}
                 {isCurrentUser ? (
                   <span className="shrink-0 inline-flex items-center rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-primary">
                     {t("common.you")}

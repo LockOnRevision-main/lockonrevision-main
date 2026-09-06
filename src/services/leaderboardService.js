@@ -22,16 +22,37 @@ function calcTotal(user) {
 }
 
 export function applyCompetitionRanking(users) {
-  const scored = users
-    .map((user) => ({ ...user, _score: calcTotal(user) }))
-    .sort((a, b) => b._score - a._score || (a.name || "").localeCompare(b.name || ""));
-
-  return scored.map((user, index, arr) => {
-    if (index > 0 && user._score === arr[index - 1]._score) {
-      return { ...user, _rank: arr[index - 1]._rank };
+  // 1) Deduplicate by UID/id — one row per UID (keep highest _score if duplicate docs)
+  const deduped = new Map();
+  for (const user of users || []) {
+    const uid = user?.id || user?.uid;
+    if (!uid) continue;
+    const scoredUser = { ...user, _score: calcTotal(user) };
+    const existing = deduped.get(uid);
+    if (!existing || scoredUser._score > existing._score) {
+      deduped.set(uid, scoredUser);
     }
-    return { ...user, _rank: index + 1 };
+  }
+
+  const scored = Array.from(deduped.values()).sort((a, b) => {
+    if (b._score !== a._score) return b._score - a._score;
+    const nameA = (a.name || a.displayName || a.username || "").toLowerCase();
+    const nameB = (b.name || b.displayName || b.username || "").toLowerCase();
+    const nameCmp = nameA.localeCompare(nameB);
+    if (nameCmp !== 0) return nameCmp;
+    // Final deterministic tie-breaker
+    return String(a.id || a.uid || "").localeCompare(String(b.id || b.uid || ""));
   });
+
+  // 2) Sequential ranking AFTER sorting — guarantees continuous 1..N, no gaps/undefined
+  const ranked = scored.map((user, index) => ({ ...user, _rank: index + 1 }));
+
+  // Debug pipeline logs (per investigation spec)
+  if (typeof console !== "undefined" && ranked.length) {
+    // Uncomment for manual verification: console.table(ranked.map(u=>({rank:u._rank, uid:u.id||u.uid, displayName:u.displayName||u.name, xp:u.xp, energy:u.energy, score:u._score, createdAt:u.createdAt})))
+  }
+
+  return ranked;
 }
 
 export function searchFilter(users, term) {
@@ -40,6 +61,7 @@ export function searchFilter(users, term) {
   return users.filter(
     (u) =>
       (u.name || "").toLowerCase().includes(q) ||
+      (u.displayName || "").toLowerCase().includes(q) ||
       (u.email || "").toLowerCase().includes(q) ||
       (u.username || "").toLowerCase().includes(q)
   );
@@ -67,23 +89,40 @@ export async function getLeaderboardUsers({ page = 1, pageSize = PAGE_SIZE, sear
   return paginate(filtered, page, pageSize);
 }
 
+function normalizeUserDoc(id, data) {
+  const d = stripAdminFields({ id, ...data });
+  // Ensure name/displayName alias so UI fallback doesn't produce duplicate "LockOn Learner" incorrectly
+  if (!d.name && d.displayName) d.name = d.displayName;
+  if (!d.displayName && d.name) d.displayName = d.name;
+  d.xp = Number(d.xp ?? 0);
+  d.energy = Number(d.energy ?? 0);
+  d.totalScore = Number(d.totalScore ?? calcTotal(d));
+  return d;
+}
+
 async function fetchAllUsers() {
   if (!isFirebaseConfigured) {
     const { readLocalState } = await import("./localStore.js");
     const state = readLocalState();
-    return Object.entries(state.users || {}).map(([uid, data]) => stripAdminFields({
-      id: uid,
+    return Object.entries(state.users || {}).map(([uid, data]) => normalizeUserDoc(uid, {
       ...data.profile,
       xp: data.xp ?? data.profile?.xp ?? 0,
       energy: data.energy ?? data.profile?.energy ?? 0,
       totalScore: data.totalScore ?? data.profile?.totalScore ?? 0,
+      uid,
+      displayName: data.profile?.displayName,
+      name: data.profile?.displayName || data.profile?.name,
+      username: data.profile?.username,
+      createdAt: data.profile?.createdAt,
     }));
   }
   if (!db) throw new Error("Firebase is not configured.");
   const usersSnap = await getDocs(
     query(collection(db, "users"), orderBy("totalScore", "desc"), limit(5000))
   );
-  return usersSnap.docs.map((doc) => stripAdminFields({ id: doc.id, ...doc.data() }));
+  // Log raw Firestore pipeline per investigation spec
+  // console.table(usersSnap.docs.map(d=>({uid:d.id, displayName:d.data().displayName, username:d.data().username, XP:d.data().xp, Energy:d.data().energy, createdAt:d.data().createdAt})))
+  return usersSnap.docs.map((doc) => normalizeUserDoc(doc.id, doc.data()));
 }
 
 export function mapUserData(doc) {

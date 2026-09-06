@@ -187,7 +187,7 @@ export function LeaderboardPage() {
                 <div className="flex items-center gap-2 min-w-0">
                   <div className="min-w-0">
                     <p className="flex items-center gap-2 font-black text-text-primary text-sm sm:text-lg truncate">
-                      {leader.name || leader.email?.split('@')[0] || t("common.learner")}
+                      {leader.name || leader.displayName || leader.username || leader.email?.split('@')[0] || t("common.learner")}
                       {isCurrentUser ? (
                         <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-primary/15 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-primary">
                           {t("common.you")}

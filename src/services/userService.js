@@ -14,23 +14,10 @@ function stripAdminFields(obj) {
 }
 
 export async function fetchLeaderboard(limitCount = 50) {
-  if (!isFirebaseConfigured) {
-    const { readLocalState } = await import("./localStore.js");
-    const state = readLocalState();
-    const users = Object.entries(state.users || {}).map(([uid, data]) => stripAdminFields({
-      id: uid,
-      ...data.profile,
-      xp: data.xp ?? data.profile?.xp ?? 0,
-      energy: data.energy ?? data.profile?.energy ?? 0,
-      totalScore: data.totalScore ?? data.profile?.totalScore ?? 0,
-    }));
-    return users.sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0)).slice(0, limitCount);
-  }
-  if (!db) throw new Error("Firebase is not configured.");
-  const usersSnap = await getDocs(
-    query(collection(db, "users"), orderBy("totalScore", "desc"), limit(limitCount))
-  );
-  return usersSnap.docs.map(doc => stripAdminFields({ id: doc.id, ...doc.data() }));
+  // Deprecated path — delegate to leaderboardService for consistent ranking; kept for backward compat
+  const { getTopLeaderboardUsers } = await import("./leaderboardService.js");
+  const ranked = await getTopLeaderboardUsers();
+  return ranked.slice(0, limitCount);
 }
 
 export function calculateTotalScore(profile) {
