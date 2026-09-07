@@ -179,6 +179,70 @@ export async function updateTimetable(uid, timetableId, updatedFields) {
   await batch.commit();
 }
 
+// Upsert – ensures only one active timetable; updates existing instead of creating orphaned docs
+export async function upsertTimetable(uid, timetable) {
+  if (!isFirebaseConfigured) {
+    const existing = (getLocalUser(uid)?.timetables || [])[0];
+    if (existing?.id) {
+      await updateTimetable(uid, existing.id, timetable);
+      // Cleanup duplicates in local store – keep only the updated one at front
+      const userData = getLocalUser(uid);
+      if (userData && userData.timetables && userData.timetables.length > 1) {
+        const keepId = existing.id;
+        updateLocalUser(uid, (ud) => ({
+          ...ud,
+          timetables: ud.timetables.filter((t) => t.id === keepId),
+        }));
+      }
+      return existing.id;
+    }
+    return saveTimetable(uid, timetable);
+  }
+
+  // Firestore: check for existing timetables
+  let existingSnap;
+  try {
+    existingSnap = await getDocs(query(collection(db, "users", uid, "timetables"), orderBy("updatedAt", "desc")));
+  } catch (e) {
+    console.warn("[timetableService] upsert: failed to query existing, falling back to save", e?.message);
+    return saveTimetable(uid, timetable);
+  }
+
+  if (existingSnap && !existingSnap.empty) {
+    const existingId = existingSnap.docs[0].id;
+    try {
+      await updateTimetable(uid, existingId, timetable);
+      console.log("[timetableService] upsert: updated existing", { existingId });
+    } catch (e) {
+      console.error("[timetableService] upsert: update failed, creating new", e?.message);
+      return saveTimetable(uid, timetable);
+    }
+    // Cleanup orphaned duplicates – delete all but the updated one
+    const orphanIds = existingSnap.docs.slice(1).map((d) => d.id);
+    if (orphanIds.length) {
+      console.log("[timetableService] upsert: cleaning orphaned timetables", { orphanIds });
+      for (const oid of orphanIds) {
+        try {
+          await deleteDoc(doc(db, "users", uid, "timetables", oid));
+        } catch (e) {
+          console.warn("[timetableService] upsert: failed to delete orphan", oid, e?.message);
+        }
+      }
+    }
+    return existingId;
+  }
+
+  return saveTimetable(uid, timetable);
+}
+
+export async function getTimetables(uid) {
+  if (!isFirebaseConfigured) {
+    return getLocalUser(uid)?.timetables || [];
+  }
+  const snap = await getDocs(query(collection(db, "users", uid, "timetables"), orderBy("updatedAt", "desc")));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
 export function subscribeTimetables(uid, callback) {
   if (!isFirebaseConfigured) {
     return subscribeLocalState(() => callback(getLocalUser(uid)?.timetables || []));
@@ -186,6 +250,9 @@ export function subscribeTimetables(uid, callback) {
   return onSnapshot(
     query(collection(db, "users", uid, "timetables"), orderBy("updatedAt", "desc")),
     (snapshot) => callback(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    (err) => {
+      console.error("[timetableService] subscribeTimetables failed", err?.code, err?.message);
+    },
   );
 }
 
@@ -522,6 +589,18 @@ export async function reprocessTimetableDocuments(uid, timetableId, inlineFiles 
       const tSnap = await getDoc(doc(db,"users",uid,"timetables",timetableId));
       if (tSnap.exists()) currentTimetable = {id:tSnap.id, ...tSnap.data()};
     }
+    // Fallback: if no timetableId (stale Dashboard card) or not found, fetch latest from Firestore
+    if (!currentTimetable) {
+      try {
+        const latest = await getDocs(query(collection(db, "users", uid, "timetables"), orderBy("updatedAt", "desc")));
+        if (!latest.empty) {
+          currentTimetable = { id: latest.docs[0].id, ...latest.docs[0].data() };
+          console.log("[timetable] reprocess: resolved currentTimetable via latest query", { id: currentTimetable.id });
+        }
+      } catch (e) {
+        console.warn("[timetable] reprocess: failed to resolve latest timetable", e?.message);
+      }
+    }
   }
   // Attach inline bytes by filename match so backend prefers direct ingest over Cloudinary URL
   const inlineByName = new Map((inlineFiles||[]).map(f=> [f.name, f]));
@@ -660,8 +739,8 @@ export async function reprocessTimetableDocuments(uid, timetableId, inlineFiles 
     }
     return { extracted, timetable: newTimetable };
   }
-  // No existing timetable – save new
-  const savedId = await saveTimetable(uid, { ...newTimetable, extracted, preferences: prefs });
+  // No existing timetable – save new via upsert to prevent duplicate race
+  const savedId = await upsertTimetable(uid, { ...newTimetable, extracted, preferences: prefs });
   newTimetable.id = savedId;
   return { extracted, timetable: newTimetable };
 }
@@ -775,4 +854,135 @@ export function getRemainingWorkload(timetable) {
       .map(([subject, minutes]) => ({ subject, minutes }))
       .sort((a, b) => b.minutes - a.minutes),
   };
+}
+
+// ── Dashboard-specific helpers ─────────────────────────────────────
+export function getNextExam(timetable) {
+  if (!timetable?.preferences?.examDates?.length && !timetable?.extracted?.assessments?.length) return null;
+  const examDates = timetable.preferences?.examDates || [];
+  const assessments = timetable.extracted?.assessments || [];
+  const all = [
+    ...examDates.map((e) => ({ subject: e.subject, date: e.date, type: e.type || "exam", source: "examDates" })),
+    ...assessments.map((a) => ({ subject: a.subject, date: a.date, type: a.assessmentType || a.type || "assessment", source: "assessment" })),
+  ].filter((e) => e.date);
+  // Dedupe by subject|date
+  const seen = new Set();
+  const deduped = all.filter((e) => {
+    const k = `${e.subject}|${e.date}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const upcoming = deduped
+    .map((e) => {
+      const d = new Date(e.date + "T00:00:00");
+      const diffMs = d - now;
+      const diffDays = Math.ceil(diffMs / 86400000);
+      return { ...e, diffDays, dateObj: d };
+    })
+    .filter((e) => e.diffDays >= 0)
+    .sort((a, b) => a.diffDays - b.diffDays);
+  return upcoming[0] || null;
+}
+
+export function getUpcomingDeadlines(timetable, limit = 4) {
+  if (!timetable?.preferences?.examDates?.length && !timetable?.extracted?.assessments?.length) return [];
+  const examDates = timetable.preferences?.examDates || [];
+  const assessments = timetable.extracted?.assessments || [];
+  const all = [
+    ...examDates.map((e) => ({ subject: e.subject, date: e.date, type: e.type || "exam" })),
+    ...assessments.map((a) => ({ subject: a.subject, date: a.date, type: a.assessmentType || a.type || "assessment" })),
+  ].filter((e) => e.date);
+  const seen = new Set();
+  const deduped = all.filter((e) => {
+    const k = `${e.subject}|${e.date}|${e.type}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  return deduped
+    .map((e) => {
+      const d = new Date(e.date + "T00:00:00");
+      const diffDays = Math.ceil((d - now) / 86400000);
+      return { ...e, diffDays, dateObj: d };
+    })
+    .filter((e) => e.diffDays >= 0)
+    .sort((a, b) => a.diffDays - b.diffDays)
+    .slice(0, limit);
+}
+
+export function getSyllabusProgress(timetable) {
+  // Prefer extracted syllabus, fallback to preferences subjects
+  const syllabus = timetable?.extracted?.syllabus || [];
+  const preferences = timetable?.preferences?.subjects || [];
+  if (syllabus.length) {
+    const totalChapters = syllabus.reduce((sum, s) => sum + (s.chapters?.length || 0), 0);
+    // Estimate completed by counting completed sessions vs total scheduled per subject
+    const workload = getRemainingWorkload(timetable);
+    const totalMinutes = Object.values(workload.bySubject).reduce((sum, v) => sum + 0, 0) + (getWeeklyCompletion(timetable).total * 30);
+    // Simpler: use weeklyCompletion as proxy
+    const wc = getWeeklyCompletion(timetable);
+    const overall = wc.total ? wc.percent : 0;
+    // Build per-subject syllabus progress
+    const bySubject = syllabus.map((s) => {
+      const chapters = s.chapters || [];
+      const subject = s.subject || s.title;
+      const subjectSlots = (timetable.weeks || []).flatMap((w) => Object.values(w.days || {}).flat()).filter((sl) => sl.subject === subject);
+      const completed = subjectSlots.filter((sl) => sl.completed).length;
+      const total = subjectSlots.length || chapters.length || 1;
+      return {
+        subject,
+        chapters: chapters.length,
+        completed,
+        total,
+        percent: Math.round((completed / total) * 100),
+      };
+    });
+    const totalCompleted = bySubject.reduce((sum, b) => sum + b.completed, 0);
+    const totalAll = bySubject.reduce((sum, b) => sum + b.total, 0) || totalChapters || 1;
+    return {
+      totalChapters,
+      completed: totalCompleted,
+      total: totalAll,
+      percent: totalAll ? Math.round((totalCompleted / totalAll) * 100) : overall,
+      bySubject,
+    };
+  }
+  // Fallback: use preferences subjects + weekly completion
+  const wc = getWeeklyCompletion(timetable);
+  const bySubject = preferences.map((s) => {
+    const subjectSlots = (timetable.weeks || []).flatMap((w) => Object.values(w.days || {}).flat()).filter((sl) => sl.subject === s.title);
+    const completed = subjectSlots.filter((sl) => sl.completed).length;
+    const total = subjectSlots.length || 1;
+    return {
+      subject: s.title,
+      chapters: 0,
+      completed,
+      total,
+      percent: Math.round((completed / total) * 100),
+    };
+  });
+  return {
+    totalChapters: bySubject.length,
+    completed: bySubject.reduce((sum, b) => sum + b.completed, 0),
+    total: bySubject.reduce((sum, b) => sum + b.total, 0),
+    percent: wc.percent,
+    bySubject,
+  };
+}
+
+export function getLastUpdatedTimestamp(timetable) {
+  if (!timetable) return null;
+  const raw = timetable.updatedAt || timetable.createdAt;
+  if (!raw) return null;
+  try {
+    if (typeof raw.toDate === "function") return raw.toDate().toISOString();
+    if (typeof raw === "string") return raw;
+    if (raw.seconds) return new Date(raw.seconds * 1000).toISOString();
+  } catch {}
+  return String(raw);
 }

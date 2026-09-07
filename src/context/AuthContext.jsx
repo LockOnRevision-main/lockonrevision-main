@@ -102,6 +102,9 @@ async function ensureUserDocument(user, name) {
     if (typeof data.xp !== "number") patch.xp = 0;
     if (typeof data.energy !== "number") patch.energy = 0;
     if (typeof data.streak !== "number") patch.streak = 0;
+    if (typeof data.currentStreak !== "number") patch.currentStreak = data.streak || 0;
+    if (typeof data.bestStreak !== "number") patch.bestStreak = data.streak || 0;
+    if (typeof data.lastCompletedDate !== "string" && !(data.lastCompletedDate && typeof data.lastCompletedDate.toDate === "function")) patch.lastCompletedDate = null;
     if (typeof data.totalStudyHours !== "number") patch.totalStudyHours = 0;
     if (typeof data.completedLessons !== "number") patch.completedLessons = 0;
     const expectedTotal = (data.xp || 0) + (data.energy || 0) * 100;

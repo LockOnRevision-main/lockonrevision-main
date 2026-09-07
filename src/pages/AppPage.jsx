@@ -1,13 +1,14 @@
-import { Award, BookOpen, CalendarDays, CheckCircle2, Clock, ListChecks, Medal, Target, Trophy, Zap } from "lucide-react";
+import { Award, BookOpen, CalendarDays, CheckCircle2, Clock, ListChecks, Medal, Target, Trophy, Zap, AlertTriangle, GraduationCap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { StatCard } from "../components/StatCard.jsx";
 import { LeaderboardPreview } from "../components/LeaderboardPreview.jsx";
+import { DailyChallengeCard } from "../components/DailyChallengeCard.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { subscribeSubjects, subscribeUserCollection } from "../services/learningService.js";
 import { getTopLeaderboardUsers } from "../services/leaderboardService.js";
-import { getTodaySessions, getUpcomingLessons, getWeeklyCompletion, getRemainingWorkload, subscribeTimetables } from "../services/timetableService.js";
+import { getTodaySessions, getUpcomingLessons, getWeeklyCompletion, getRemainingWorkload, subscribeTimetables, getNextExam, getUpcomingDeadlines, getSyllabusProgress, getLastUpdatedTimestamp } from "../services/timetableService.js";
 
 function scoreBreakdown(profile) {
   const xp = Number(profile?.xp || 0);
@@ -36,6 +37,10 @@ export function AppPage() {
   const upcomingLessons = useMemo(() => activeTimetable ? getUpcomingLessons(activeTimetable, 4) : [], [activeTimetable]);
   const weeklyCompletion = useMemo(() => activeTimetable ? getWeeklyCompletion(activeTimetable) : { completed: 0, total: 0, percent: 0 }, [activeTimetable]);
   const remainingWorkload = useMemo(() => activeTimetable ? getRemainingWorkload(activeTimetable) : { totalMinutes: 0, bySubject: [] }, [activeTimetable]);
+  const nextExam = useMemo(() => activeTimetable ? getNextExam(activeTimetable) : null, [activeTimetable]);
+  const upcomingDeadlines = useMemo(() => activeTimetable ? getUpcomingDeadlines(activeTimetable, 4) : [], [activeTimetable]);
+  const syllabusProgress = useMemo(() => activeTimetable ? getSyllabusProgress(activeTimetable) : null, [activeTimetable]);
+  const lastUpdated = useMemo(() => activeTimetable ? getLastUpdatedTimestamp(activeTimetable) : null, [activeTimetable]);
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -93,7 +98,7 @@ export function AppPage() {
         <StatCard label={t("dashboard.xp")} value={score.xp.toLocaleString()} helper={t("dashboard.learning_progress")} tone="bg-surface" />
         <StatCard label={t("dashboard.energy")} value={String(score.energy)} helper={t("dashboard.energy_helper")} tone="bg-card" />
         <StatCard label={t("dashboard.total_score")} value={score.totalScore.toLocaleString()} helper={t("dashboard.xp_energy_bonus")} tone="bg-surface" />
-        <StatCard label={t("dashboard.streak")} value={`${profile?.streak || 0} ${t("common.days")}`} helper={t("dashboard.lessons_completed")} tone="bg-card" />
+        <StatCard label={t("dashboard.streak")} value={`${profile?.currentStreak ?? profile?.streak ?? 0} ${t("common.days")}`} helper={t("dashboard.lessons_completed")} tone="bg-card" />
         <StatCard
           label={t("dashboard.completed")}
           value={`${profile?.completedLessons || 0}`}
@@ -101,6 +106,106 @@ export function AppPage() {
           tone="bg-surface"
         />
       </section>
+
+      {/* Daily AI Challenge */}
+      <DailyChallengeCard />
+
+      {/* Last updated timestamp */}
+      {activeTimetable && lastUpdated && (
+        <p className="text-xs text-text-muted text-right -mt-4">Last updated: {new Date(lastUpdated).toLocaleString()} • <Link to="/timetable" className="text-primary font-bold hover:underline">Manage timetable</Link></p>
+      )}
+
+      {/* Exam countdown + Syllabus progress + Deadlines row */}
+      {activeTimetable && (nextExam || syllabusProgress || upcomingDeadlines.length > 0) && (
+        <section className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
+          {/* Next Exam Countdown */}
+          <article className="rounded-3xl border border-border bg-surface p-6 shadow-sm flex flex-col">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="rounded-xl bg-status-error/10 p-2 text-status-error shrink-0">
+                <GraduationCap size={20} />
+              </div>
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-text-secondary">Next Exam</p>
+                <h3 className="text-lg font-black tracking-tight text-text-primary">{nextExam ? nextExam.subject : "No exams scheduled"}</h3>
+              </div>
+            </div>
+            {nextExam ? (
+              <div className="flex-1">
+                <div className="flex items-baseline gap-2">
+                  <span className={`text-4xl font-black tracking-tighter ${nextExam.diffDays <= 3 ? "text-status-error" : nextExam.diffDays <= 7 ? "text-warning" : "text-text-primary"}`}>{nextExam.diffDays}</span>
+                  <span className="text-sm font-bold text-text-muted">{nextExam.diffDays === 0 ? "Today!" : nextExam.diffDays === 1 ? "day left" : "days left"}</span>
+                </div>
+                <p className="mt-1 text-sm text-text-secondary">{new Date(nextExam.date + "T00:00:00").toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })} • {nextExam.type}</p>
+                {nextExam.diffDays <= 7 && (
+                  <p className="mt-2 inline-flex items-center gap-1 rounded-full bg-status-error/10 border border-status-error/20 px-2 py-1 text-xs font-bold text-status-error"><AlertTriangle size={12} /> Upcoming soon</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-text-muted flex-1">Add exam dates in Timetable to see countdown.</p>
+            )}
+            <Link to="/timetable" className="mt-4 text-xs font-bold text-primary underline underline-offset-2">View all deadlines →</Link>
+          </article>
+
+          {/* Syllabus Progress */}
+          <article className="rounded-3xl border border-border bg-surface p-6 shadow-sm flex flex-col">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="rounded-xl bg-primary/10 p-2 text-primary shrink-0">
+                <BookOpen size={20} />
+              </div>
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-text-secondary">Syllabus Progress</p>
+                <h3 className="text-lg font-black tracking-tight text-text-primary">{syllabusProgress ? `${syllabusProgress.percent}%` : "—"}</h3>
+              </div>
+            </div>
+            {syllabusProgress ? (
+              <div className="flex-1">
+                <div className="h-2 w-full overflow-hidden rounded-full bg-background border border-border">
+                  <div className="h-full bg-primary transition-all duration-500" style={{ width: `${syllabusProgress.percent}%` }} />
+                </div>
+                <p className="mt-1 text-xs text-text-secondary">{syllabusProgress.completed}/{syllabusProgress.total} sessions completed</p>
+                {syllabusProgress.bySubject.slice(0, 3).map((s) => (
+                  <div key={s.subject} className="mt-2 flex justify-between text-xs">
+                    <span className="truncate text-text-secondary">{s.subject}</span>
+                    <span className="font-bold text-text-primary">{s.percent}%</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-text-muted flex-1">Upload syllabus to track progress.</p>
+            )}
+            <Link to="/timetable" className="mt-4 text-xs font-bold text-primary underline underline-offset-2">View timetable →</Link>
+          </article>
+
+          {/* Upcoming Deadlines */}
+          <article className="rounded-3xl border border-border bg-surface p-6 shadow-sm flex flex-col">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="rounded-xl bg-warning/10 p-2 text-warning shrink-0">
+                <AlertTriangle size={20} />
+              </div>
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-text-secondary">Upcoming Deadlines</p>
+                <h3 className="text-lg font-black tracking-tight text-text-primary">Deadlines</h3>
+              </div>
+            </div>
+            {upcomingDeadlines.length > 0 ? (
+              <div className="space-y-2 flex-1">
+                {upcomingDeadlines.map((d, i) => (
+                  <div key={i} className="flex items-center justify-between rounded-xl border border-border bg-background px-3 py-2 text-sm">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-bold text-text-primary">{d.subject}</p>
+                      <p className="text-xs text-text-muted">{d.type} • {new Date(d.date + "T00:00:00").toLocaleDateString()}</p>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-black ${d.diffDays <= 3 ? "bg-status-error/15 text-status-error" : d.diffDays <= 7 ? "bg-warning/15 text-warning" : "bg-surface border border-border text-text-muted"}`}>{d.diffDays === 0 ? "Today" : `${d.diffDays}d`}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-text-muted flex-1">No upcoming deadlines.</p>
+            )}
+            <Link to="/timetable" className="mt-4 text-xs font-bold text-primary underline underline-offset-2">View timetable →</Link>
+          </article>
+        </section>
+      )}
 
       {/* Timetable dashboard row */}
       {activeTimetable ? (

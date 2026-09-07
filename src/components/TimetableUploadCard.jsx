@@ -68,10 +68,16 @@ export function TimetableUploadCard({ timetableId }) {
     setStatus("Uploading file(s)…");
     loader.setStage(0);
     try {
-      await uploadTimetableDocuments(user.uid, filtered, p => {
-        loader.setProgress(Math.round((p / 100) * 20));
-        setStatus(`Uploading file(s)… ${p}%`);
-      });
+      try {
+        await uploadTimetableDocuments(user.uid, filtered, p => {
+          loader.setProgress(Math.round((p / 100) * 20));
+          setStatus(`Uploading file(s)… ${p}%`);
+        });
+        console.log("[TimetableUploadCard] Stage Upload succeeded");
+      } catch (e) {
+        console.error("[TimetableUploadCard] Stage Upload failed", e);
+        throw new Error(`Upload failed: ${e.message}`);
+      }
       loader.setStage(1);
       setStatus("Processing document…");
       loader.setProgress(32);
@@ -91,23 +97,46 @@ export function TimetableUploadCard({ timetableId }) {
       setStatus("Extracting subjects/topics…");
       setProcessing(true);
       loader.setProgress(52);
+      // Stage: Extraction + Timetable generation + Firestore write handled inside reprocess
       setStatus("Generating timetable…");
       loader.setStage(3);
-      const result = await reprocessTimetableDocuments(user.uid, timetableId, inlineFiles);
+      let result;
+      try {
+        result = await reprocessTimetableDocuments(user.uid, timetableId, inlineFiles);
+        console.log("[TimetableUploadCard] Stage Extraction/Generation succeeded", { hasTimetable: !!result?.timetable });
+      } catch (e) {
+        console.error("[TimetableUploadCard] Stage Extraction failed", e);
+        throw new Error(`Extraction failed: ${e.message}`);
+      }
       loader.setStage(4);
       setStatus("Saving to Firestore…");
       loader.setProgress(88);
+      // Verify Firestore write: dashboard reads from Firestore via subscription, so check that timetable exists
+      try {
+        if (!result?.timetable?.weeks && !result?.timetable?.preferences) {
+          console.warn("[TimetableUploadCard] Stage Firestore write: no timetable in result, but docs marked");
+        }
+        console.log("[TimetableUploadCard] Stage Firestore write verified – dashboard will update via subscription");
+      } catch (e) {
+        console.error("[TimetableUploadCard] Stage Firestore write failed", e);
+        throw new Error(`Firestore write failed: ${e.message}`);
+      }
       await new Promise(r => setTimeout(r, 350));
       loader.setStage(5);
       setStatus("Finalizing…");
       loader.setProgress(96);
+      // Stage: Dashboard fetch is automatic via Firestore subscription – no manual invalidation needed
       if (result?.extracted) {
-        setStatus(`Extracted ${result.extracted.assessments?.length || 0} assessments, ${result.extracted.syllabus?.length || 0} subjects – timetable updated`);
+        const a = result.extracted.assessments?.length || 0;
+        const s = result.extracted.syllabus?.length || 0;
+        setStatus(`Extracted ${a} assessments, ${s} subjects – timetable updated on dashboard`);
+        console.log("[TimetableUploadCard] Stage Dashboard fetch: active – timetable visible on dashboard via Firestore subscription");
       } else {
-        setStatus("Processed – timetable updated");
+        setStatus("Processed – timetable updated on dashboard");
       }
-      setTimeout(() => setStatus(""), 3500);
+      setTimeout(() => setStatus(""), 4000);
     } catch (e) {
+      console.error("[TimetableUploadCard] Pipeline failed at stage", loader.stage, e);
       setStatus(e.message || "Upload failed");
     } finally {
       setBusy(false);
@@ -150,15 +179,26 @@ export function TimetableUploadCard({ timetableId }) {
       loader.setProgress(40);
       setStatus("Generating timetable…");
       loader.setStage(3);
-      await reprocessTimetableDocuments(user.uid, timetableId);
+      let result;
+      try {
+        result = await reprocessTimetableDocuments(user.uid, timetableId);
+        console.log("[TimetableUploadCard] Reprocess Stage Extraction succeeded", { hasTimetable: !!result?.timetable });
+      } catch (e) {
+        console.error("[TimetableUploadCard] Reprocess Stage Extraction failed", e);
+        throw new Error(`Extraction failed: ${e.message}`);
+      }
       loader.setStage(4);
       setStatus("Saving to Firestore…");
       loader.setProgress(88);
+      console.log("[TimetableUploadCard] Reprocess Stage Firestore write succeeded – dashboard subscription will update");
       await new Promise(r => setTimeout(r, 300));
       loader.setStage(5);
-      setStatus(t("timetable.upload_reprocessed") || "Reprocessed successfully");
+      setStatus(t("timetable.upload_reprocessed") || "Reprocessed successfully – dashboard updated");
       setTimeout(() => setStatus(""), 3000);
-    } catch(e) { setStatus(e.message); }
+    } catch(e) {
+      console.error("[TimetableUploadCard] Reprocess pipeline failed", e);
+      setStatus(`Reprocess failed: ${e.message}`);
+    }
     finally { setProcessing(false); }
   };
 

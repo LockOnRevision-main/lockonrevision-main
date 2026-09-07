@@ -31,6 +31,7 @@ const routes = {
   '/api/generate-question-hint': () => import('./generate-question-hint.js'),
   '/api/explain-wrong-answer': () => import('./explain-wrong-answer.js'),
   '/api/generate-timetable': () => import('./generate-timetable.js'),
+  '/api/generate-daily-challenge': () => import('./generate-daily-challenge.js'),
   '/api/delete-cloudinary-files': () => import('./delete-cloudinary-files.js'),
 };
 

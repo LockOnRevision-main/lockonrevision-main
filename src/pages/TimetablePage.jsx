@@ -6,7 +6,7 @@ import { TimetableDisplay } from "../components/TimetableDisplay.jsx";
 import { TimetableForm } from "../components/TimetableForm.jsx";
 import { TimetableUploadCard } from "../components/TimetableUploadCard.jsx";
 
-import { generateTimetable, savePreferencesLocally, saveTimetable, subscribeTimetables } from "../services/timetableService.js";
+import { generateTimetable, savePreferencesLocally, saveTimetable, subscribeTimetables, updateTimetable, upsertTimetable } from "../services/timetableService.js";
 import { setupTimetableIntegration } from "../services/timetableIntegration.js";
 import { useStagedProgress } from "../hooks/useStagedProgress.js";
 
@@ -24,7 +24,10 @@ export function TimetablePage() {
     if (!user?.uid) return;
     const unsub = subscribeTimetables(user.uid, (data) => {
       if (data.length > 0) {
-        setTimetable((prev) => prev || data[0]);
+        // Always use latest Firestore data – ensures dashboard sync after upload
+        setTimetable(data[0]);
+      } else {
+        setTimetable(null);
       }
     });
     return unsub;
@@ -45,17 +48,43 @@ export function TimetablePage() {
     setSaved(false);
     loader.setStage(3);
     try {
-      savePreferencesLocally(preferences);
+      // Stage: Upload (preferences)
+      try {
+        savePreferencesLocally(preferences);
+      } catch (e) {
+        console.error("[TimetablePage] Stage Upload failed", e);
+        throw new Error(`Upload stage failed: ${e.message}`);
+      }
       loader.setProgress(45);
-      const result = await generateTimetable(preferences);
+      // Stage: Timetable generation
+      let result;
+      try {
+        result = await generateTimetable(preferences);
+      } catch (e) {
+        console.error("[TimetablePage] Stage Timetable generation failed", e);
+        throw new Error(`Timetable generation failed: ${e.message}`);
+      }
+      if (!result?.weeks) {
+        console.error("[TimetablePage] Stage Generation returned invalid structure", result);
+        throw new Error("Timetable generation returned invalid data");
+      }
       loader.setStage(4);
       loader.setProgress(88);
-      setTimetable(result);
-      await saveTimetable(user.uid, result);
+      // Stage: Firestore write – upsert to avoid orphaned duplicates
+      try {
+        const savedId = await upsertTimetable(user.uid, result);
+        console.log("[TimetablePage] Stage Firestore write succeeded", { savedId });
+        // Do not set local state manually – subscription will deliver canonical Firestore doc
+        // This ensures dashboard and all subscribers update from source of truth
+      } catch (e) {
+        console.error("[TimetablePage] Stage Firestore write failed", e);
+        throw new Error(`Firestore write failed: ${e.message}`);
+      }
       loader.setStage(5);
       loader.setProgress(98);
       setSaved(true);
     } catch (err) {
+      console.error("[TimetablePage] handleGenerate pipeline failed", { stage: loader.stage, error: err.message });
       setError(err.message || t("timetable_page.failed_generate"));
     } finally {
       setBusy(false);

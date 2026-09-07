@@ -13,6 +13,7 @@ import { LeaderboardPage } from "./pages/LeaderboardPage.jsx";
 import { LoginPage } from "./pages/LoginPage.jsx";
 import { ProfilePage } from "./pages/ProfilePage.jsx";
 import { TimetablePage } from "./pages/TimetablePage.jsx";
+import { DailyChallengePage } from "./pages/DailyChallengePage.jsx";
 import { canAccessAdmin } from "./utils/permissions.js";
 
 function LoadingScreen() {
@@ -110,6 +111,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <TimetablePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/daily-challenge"
+        element={
+          <ProtectedRoute>
+            <DailyChallengePage />
           </ProtectedRoute>
         }
       />
