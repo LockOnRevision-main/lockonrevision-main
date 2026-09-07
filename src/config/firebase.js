@@ -37,5 +37,8 @@ if (typeof window !== "undefined" && !isFirebaseConfigured) {
 export const app = isFirebaseConfigured ? initializeApp(firebaseConfig) : null;
 export const auth = app ? getAuth(app) : null;
 export const db = app ? getFirestore(app) : null;
-export const functions = app ? getFunctions(app) : null;
+// Explicit region must match deployed function region (us-central1).
+// onCall functions handle CORS automatically; frontend MUST use httpsCallable (not fetch)
+// to avoid preflight failures against the callable endpoint.
+export const functions = app ? getFunctions(app, "us-central1") : null;
 export const storage = app ? getStorage(app) : null;
